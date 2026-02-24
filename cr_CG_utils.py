@@ -284,6 +284,7 @@ def plot_waterfall(res):
     fig.update_layout(title="Capacity Loss Bridge", template="plotly_dark", height=450)
     return fig
 
+
 def plot_shot_analysis(df_shots):
     """Scatter/Bar chart of every single shot cycle time."""
     fig = go.Figure()
