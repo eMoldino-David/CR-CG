@@ -30,61 +30,98 @@ def format_seconds_to_dhm(total_seconds):
     if minutes > 0 or not parts: parts.append(f"{minutes}m")
     return " ".join(parts) if parts else "0m"
 
+# --- robust mapping engine ---
+def find_and_rename_cols(df, mapping):
+    """improved fuzzy mapping to handle variations in user headers."""
+    col_map = {str(col).strip().upper(): col for col in df.columns}
+    rename_dict = {}
+    
+    for internal_key, search_terms in mapping.items():
+        found = False
+        # priority 1: exact matches from list
+        for term in search_terms:
+            if term.upper() in col_map:
+                rename_dict[col_map[term.upper()]] = internal_key
+                found = True
+                break
+        
+        # priority 2: partial matches if not found
+        if not found:
+            for actual_col_upper, actual_col_raw in col_map.items():
+                if any(term.upper() in actual_col_upper for term in search_terms):
+                    rename_dict[actual_col_raw] = internal_key
+                    break
+                    
+    return df.rename(columns=rename_dict)
+
 # --- data loading ---
 def load_production_data(files):
-    """Standardizes uploaded production shot data."""
+    """standardizes uploaded production shot data with fuzzy matching."""
     df_list = []
+    prod_mapping = {
+        "po_number": ["PO_NUMBER", "PO #", "PURCHASE ORDER", "PO_NUM"],
+        "project": ["PROJECT", "PROJ", "PROGRAM"],
+        "part_id": ["PART_ID", "PART NUMBER", "PART", "ITEM"],
+        "tool_id": ["TOOLING ID", "EQUIPMENT", "TOOL_ID", "ASSET", "TOOL"],
+        "shot_time": ["SHOT TIME", "TIMESTAMP", "DATE", "TIME", "STAMP"],
+        "actual_ct": ["ACTUAL CT", "ACTUAL_CT", "CYCLE TIME", "ACTUAL_CYCLE"],
+        "approved_ct": ["APPROVED CT", "APPROVED_CT", "STD CT", "IDEAL CT"],
+        "working_cavities": ["WORKING CAVITIES", "CAVITIES", "CAV", "CAVS"]
+    }
+
     for file in files:
         try:
             df = pd.read_excel(file) if file.name.endswith(('.xls', '.xlsx')) else pd.read_csv(file)
-            col_map = {col.strip().upper(): col for col in df.columns}
-            mapping = {
-                "po_number": ["PO_NUMBER", "PO #", "PURCHASE ORDER"],
-                "project": ["PROJECT", "PROJECT_NAME"],
-                "part_id": ["PART_ID", "PART NUMBER", "PART"],
-                "tool_id": ["TOOLING ID", "EQUIPMENT CODE", "TOOL_ID"],
-                "shot_time": ["SHOT TIME", "TIMESTAMP", "DATE", "TIME"],
-                "actual_ct": ["ACTUAL CT", "ACTUAL_CT", "CYCLE TIME"],
-                "approved_ct": ["APPROVED CT", "APPROVED_CT", "STD CT"],
-                "working_cavities": ["WORKING CAVITIES", "CAVITIES"]
-            }
-            for key, targets in mapping.items():
-                for t in targets:
-                    if t in col_map:
-                        df.rename(columns={col_map[t]: key}, inplace=True)
-                        break
+            df = find_and_rename_cols(df, prod_mapping)
+
             if "shot_time" in df.columns:
                 df["shot_time"] = pd.to_datetime(df["shot_time"], errors="coerce")
-                df["actual_ct"] = pd.to_numeric(df["actual_ct"], errors="coerce")
-                df.dropna(subset=["shot_time", "actual_ct"], inplace=True)
+                
+                # handle missing critical numeric columns
+                if "actual_ct" not in df.columns:
+                    # try to calculate from timestamp diff if missing
+                    df = df.sort_values("shot_time")
+                    df["actual_ct"] = df["shot_time"].diff().dt.total_seconds().fillna(30)
+                else:
+                    df["actual_ct"] = pd.to_numeric(df["actual_ct"], errors="coerce")
+                
+                if "working_cavities" not in df.columns:
+                    df["working_cavities"] = 1
+                else:
+                    df["working_cavities"] = pd.to_numeric(df["working_cavities"], errors="coerce").fillna(1)
+
+                df.dropna(subset=["shot_time"], inplace=True)
                 df_list.append(df)
         except Exception: continue
+    
     return pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
 
 def load_po_data(files):
-    """Standardizes uploaded planning/PO data."""
+    """standardizes uploaded planning/po data with fuzzy matching."""
     df_list = []
+    po_mapping = {
+        "po_number": ["PO_NUMBER", "PO #", "PURCHASE ORDER"], 
+        "project": ["PROJECT", "PROJ"], 
+        "part_id": ["PART_ID", "PART", "ITEM"], 
+        "total_qty": ["TOTAL_QTY", "QTY", "TARGET", "ORDER_QTY"], 
+        "due_date": ["DUE_DATE", "DUE", "DEADLINE"]
+    }
+
     for file in files:
         try:
             df = pd.read_excel(file) if file.name.endswith(('.xls', '.xlsx')) else pd.read_csv(file)
-            df.columns = [c.strip().upper() for c in df.columns]
-            mapping = {
-                "PO_NUMBER": "po_number", 
-                "PROJECT": "project", 
-                "PART_ID": "part_id", 
-                "TOTAL_QTY": "total_qty", 
-                "DUE_DATE": "due_date"
-            }
-            df.rename(columns=mapping, inplace=True)
+            df = find_and_rename_cols(df, po_mapping)
             if 'due_date' in df.columns:
                 df['due_date'] = pd.to_datetime(df['due_date'], errors='coerce')
+            if 'total_qty' in df.columns:
+                df['total_qty'] = pd.to_numeric(df['total_qty'], errors='coerce')
             df_list.append(df)
         except Exception: continue
     return pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
 
 # --- calculation engine ---
 class CapacityRiskCalculator:
-    """Core logic to identify production runs, downtime, and cycle efficiency."""
+    """core logic to identify production runs, downtime, and cycle efficiency."""
     def __init__(self, df, config):
         self.df = df.copy()
         self.config = config
@@ -94,26 +131,28 @@ class CapacityRiskCalculator:
         if self.df.empty: return {}
         df = self.df.sort_values("shot_time").reset_index(drop=True)
         
-        # Identify production runs
+        # identify production runs (default 8hr gap = new run)
         df['time_diff'] = df['shot_time'].diff().dt.total_seconds().fillna(0)
-        is_new_run = df['time_diff'] > (self.config['run_interval_hours'] * 3600)
+        is_new_run = df['time_diff'] > (self.config.get('run_interval_hours', 8) * 3600)
         df['run_id'] = is_new_run.cumsum()
         
-        # Calculate Mode CT and tolerance bands
+        # calculate mode ct (physics of the tool)
         run_modes = df.groupby('run_id')['actual_ct'].apply(lambda x: x.mode().iloc[0] if not x.mode().empty else x.mean())
         df['mode_ct'] = df['run_id'].map(run_modes)
-        df['mode_lower'] = df['mode_ct'] * (1 - self.config['tolerance'])
-        df['mode_upper'] = df['mode_ct'] * (1 + self.config['tolerance'])
+        df['mode_lower'] = df['mode_ct'] * (1 - self.config.get('tolerance', 0.05))
+        df['mode_upper'] = df['mode_ct'] * (1 + self.config.get('tolerance', 0.05))
         
-        # Identify stops/downtime
+        # identify downtime vs abnormal speed
         df['next_diff'] = df['time_diff'].shift(-1).fillna(0)
         is_gap = df['next_diff'] > (df['actual_ct'] + 2.0)
         is_abnormal = (df['actual_ct'] < df['mode_lower']) | (df['actual_ct'] > df['mode_upper'])
         df['stop_flag'] = np.where(is_gap | is_abnormal, 1, 0)
         df.loc[is_new_run, 'stop_flag'] = 0
         
-        # Classify shots for visualization
-        if 'approved_ct' not in df.columns: df['approved_ct'] = df['mode_ct']
+        # classification
+        if 'approved_ct' not in df.columns: 
+            df['approved_ct'] = df['mode_ct']
+        
         conditions = [
             df['stop_flag'] == 1,
             df['actual_ct'] > (df['approved_ct'] * 1.05),
@@ -122,9 +161,9 @@ class CapacityRiskCalculator:
         choices = ['Downtime (Stop)', 'Slow Cycle', 'Fast Cycle']
         df['shot_type'] = np.select(conditions, choices, default='On Target')
 
-        # Volume and Time Aggregates
+        # volume calculations
         prod_df = df[df['stop_flag'] == 0]
-        actual_output = prod_df['working_cavities'].sum() if 'working_cavities' in prod_df.columns else len(prod_df)
+        actual_output = prod_df['working_cavities'].sum()
         
         total_runtime_sec = 0
         for _, run in df.groupby('run_id'):
@@ -133,7 +172,7 @@ class CapacityRiskCalculator:
         
         downtime_sec = max(0, total_runtime_sec - prod_df['actual_ct'].sum())
         avg_app_ct = df['approved_ct'].mean()
-        avg_cav = df['working_cavities'].mean() if 'working_cavities' in df.columns else 1
+        avg_cav = df['working_cavities'].mean()
         
         optimal_output = (total_runtime_sec / avg_app_ct) * avg_cav if avg_app_ct > 0 else 0
         loss_dt = (downtime_sec / avg_app_ct) * avg_cav if avg_app_ct > 0 else 0
@@ -154,7 +193,6 @@ class CapacityRiskCalculator:
         }
 
 def get_supply_metrics(df, config):
-    """Aggregates metrics by week for trend analysis."""
     if df.empty: return pd.DataFrame()
     df = df.copy()
     df['period'] = df['shot_time'].dt.to_period('W').apply(lambda r: r.start_time)
@@ -165,26 +203,23 @@ def get_supply_metrics(df, config):
         res = calc.results
         data.append({
             'period': period,
-            'actual_output': res['actual_output'],
-            'runtime_sec': res['total_runtime_sec'],
-            'total_shots': res['total_shots'],
-            'normal_shots': res['normal_shots']
+            'actual_output': res.get('actual_output', 0),
+            'runtime_sec': res.get('total_runtime_sec', 0),
+            'total_shots': res.get('total_shots', 0)
         })
     return pd.DataFrame(data)
 
 def generate_capacity_insights(res):
-    """Generates automated text analysis of production constraints."""
     if not res: return "no data available."
-    gap = res['optimal_output'] - res['actual_output']
+    gap = res.get('optimal_output', 0) - res.get('actual_output', 0)
     if gap <= 0: return "tooling is operating at theoretical capacity."
-    dt_p = (res['loss_dt'] / gap * 100) if gap > 0 else 0
-    sl_p = (res['loss_slow'] / gap * 100) if gap > 0 else 0
+    dt_p = (res.get('loss_dt', 0) / gap * 100) if gap > 0 else 0
+    sl_p = (res.get('loss_slow', 0) / gap * 100) if gap > 0 else 0
     driver = "downtime" if dt_p > sl_p else "slow cycles"
     return f"the primary constraint is <b>{driver}</b>, accounting for {max(dt_p, sl_p):.1f}% of capacity losses."
 
-# --- visualization functions ---
+# --- visualization ---
 def create_modern_gauge(value, title):
-    """Renders a half-donut gauge chart."""
     color = colors['green']
     if value <= 50: color = colors['red']
     elif value <= 75: color = colors['orange']
@@ -197,7 +232,6 @@ def create_modern_gauge(value, title):
     return fig
 
 def create_time_donut(total_sec, prod_sec, down_sec):
-    """Donut chart for time allocation."""
     fig = go.Figure(data=[go.Pie(
         labels=['production', 'downtime'], values=[prod_sec, down_sec], hole=0.7,
         marker=dict(colors=[colors['green'], colors['red']]), textinfo='none'
@@ -208,7 +242,6 @@ def create_time_donut(total_sec, prod_sec, down_sec):
     return fig
 
 def create_hybrid_chart(df_agg, cal_config):
-    """Dual-axis chart showing volume vs accomplishment and stress."""
     fig = go.Figure()
     fig.add_trace(go.Bar(x=df_agg['period'], y=df_agg['actual_output'], name='actual output', marker_color=colors['blue'], yaxis='y1'))
     if 'target' in df_agg.columns:
@@ -222,11 +255,10 @@ def create_hybrid_chart(df_agg, cal_config):
     return fig
 
 def plot_waterfall(res):
-    """Waterfall chart showing capacity breakdown."""
     fig = go.Figure(go.Waterfall(
         name="bridge", orientation="v", measure=["absolute", "relative", "relative", "relative", "total"],
         x=["optimal", "downtime", "slow cycle", "fast cycle", "actual"],
-        y=[res['optimal_output'], -res['loss_dt'], -res['loss_slow'], res['gain_fast'], res['actual_output']],
+        y=[res.get('optimal_output', 0), -res.get('loss_dt', 0), -res.get('loss_slow', 0), res.get('gain_fast', 0), res.get('actual_output', 0)],
         decreasing={"marker": {"color": colors['red']}}, increasing={"marker": {"color": colors['green']}},
         totals={"marker": {"color": colors['blue']}}
     ))
@@ -234,7 +266,6 @@ def plot_waterfall(res):
     return fig
 
 def plot_shot_analysis(df_shots):
-    """Bar chart for shot-by-shot cycle analysis."""
     fig = go.Figure()
     cmap = {'Slow Cycle': colors['red'], 'Fast Cycle': colors['orange'], 'On Target': colors['blue'], 'Downtime (Stop)': '#808080'}
     for stype, color in cmap.items():
@@ -245,7 +276,7 @@ def plot_shot_analysis(df_shots):
     return fig
 
 def create_po_burnup(df_agg, target_qty, target_date):
-    """Cumulative burn-up chart vs PO staircase target."""
+    if df_agg.empty: return go.Figure()
     df = df_agg.sort_values('period').copy()
     df['cumulative'] = df['actual_output'].cumsum()
     fig = go.Figure()
