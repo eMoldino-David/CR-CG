@@ -153,6 +153,7 @@ def create_modern_gauge(value, title):
     if value <= 50: color = PASTEL_COLORS['red']
     elif value <= 75: color = PASTEL_COLORS['orange']
     
+    
     fig = go.Figure(data=[go.Pie(
         values=[value, 100-value, 100], hole=0.7, sort=False, direction='clockwise', rotation=-90,
         marker=dict(colors=[color, '#262730', 'rgba(0,0,0,0)']), hoverinfo='none', textinfo='none'

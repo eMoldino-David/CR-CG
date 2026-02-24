@@ -94,6 +94,7 @@ with t_assurance:
     stress_pct = (actual_hrs / planned_hrs * 100) if planned_hrs > 0 else 0
     c3.metric("Tool Stress Factor", f"{stress_pct:.1f}%", delta_color="inverse")
 
+
     # Main Visuals
     st.markdown("---")
     st.plotly_chart(utils.create_hybrid_chart(agg_df, cal_config), use_container_width=True)
