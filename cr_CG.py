@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import cr_cg_utils as utils
+import cr_CG_utils as utils
 from datetime import datetime, timedelta
 import importlib
 
