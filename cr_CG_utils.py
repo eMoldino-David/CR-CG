@@ -104,7 +104,6 @@ class CapacityRiskCalculator:
         self.results = self._calculate()
 
     def _calculate(self):
-        """The primary brain that identifies runs, stops, and efficiency gaps."""
         if self.df.empty: return {}
         df = self.df.sort_values("shot_time").reset_index(drop=True)
         
@@ -113,35 +112,22 @@ class CapacityRiskCalculator:
         is_new_run = df['time_diff'] > (self.config['run_interval_hours'] * 3600)
         df['run_id'] = is_new_run.cumsum()
         
-        # 2. Mode CT & Tolerance Bands
-        run_modes = df.groupby('run_id')['actual_ct'].apply(
-            lambda x: x.mode().iloc[0] if not x.mode().empty else x.mean()
-        )
+        # 2. Mode CT & Tolerance
+        run_modes = df.groupby('run_id')['actual_ct'].apply(lambda x: x.mode().iloc[0] if not x.mode().empty else x.mean())
         df['mode_ct'] = df['run_id'].map(run_modes)
         df['mode_lower'] = df['mode_ct'] * (1 - self.config['tolerance'])
         df['mode_upper'] = df['mode_ct'] * (1 + self.config['tolerance'])
         
-        # 3. Stop Detection (Downtime vs Abnormal Cycle)
+        # 3. Stop Detection
         df['next_diff'] = df['time_diff'].shift(-1).fillna(0)
-        is_gap = df['next_diff'] > (df['actual_ct'] + 2.0) # 2s tolerance for timestamp jitter
+        is_gap = df['next_diff'] > (df['actual_ct'] + 2.0)
         is_abnormal = (df['actual_ct'] < df['mode_lower']) | (df['actual_ct'] > df['mode_upper'])
-        
         df['stop_flag'] = np.where(is_gap | is_abnormal, 1, 0)
         df.loc[is_new_run, 'stop_flag'] = 0 
         
-        # 4. State Classification
-        if 'approved_ct' not in df.columns: df['approved_ct'] = df['mode_ct']
-        conditions = [
-            df['stop_flag'] == 1,
-            df['actual_ct'] > (df['approved_ct'] * 1.05),
-            df['actual_ct'] < (df['approved_ct'] * 0.95)
-        ]
-        choices = ['Downtime (Stop)', 'Slow Cycle', 'Fast Cycle']
-        df['shot_type'] = np.select(conditions, choices, default='On Target')
-
-        # 5. Volumetric Calculation
+        # 4. Results Aggregation
         prod_df = df[df['stop_flag'] == 0]
-        actual_output = prod_df['working_cavities'].sum() if 'working_cavities' in prod_df.columns else len(prod_df)
+        actual_output = prod_df['working_cavities'].sum()
         
         total_runtime_sec = 0
         for _, run in df.groupby('run_id'):
@@ -150,16 +136,19 @@ class CapacityRiskCalculator:
         
         downtime_sec = max(0, total_runtime_sec - prod_df['actual_ct'].sum())
         
-        # Optimal Capacity Benchmark
+        # Physics Benchmarking
         avg_app_ct = df['approved_ct'].mean()
         avg_cav = df['working_cavities'].mean()
         optimal_output = (total_runtime_sec / avg_app_ct) * avg_cav if avg_app_ct > 0 else 0
+        
+        loss_dt = (downtime_sec / avg_app_ct) * avg_cav if avg_app_ct > 0 else 0
+        loss_slow = max(0, (optimal_output - loss_dt) - actual_output)
+        gain_fast = max(0, actual_output - (optimal_output - loss_dt))
 
-        # Loss Allocation
-        loss_downtime = (downtime_sec / avg_app_ct) * avg_cav if avg_app_ct > 0 else 0
-        # Inefficiency is Actual - (Optimal - Loss_Downtime)
-        loss_speed = max(0, (optimal_output - loss_downtime) - actual_output)
-        gain_speed = max(0, actual_output - (optimal_output - loss_downtime))
+        # Classification for plots
+        conditions = [df['stop_flag'] == 1, df['actual_ct'] > df['approved_ct'], df['actual_ct'] < df['approved_ct']]
+        choices = ['Downtime (Stop)', 'Slow Cycle', 'Fast Cycle']
+        df['shot_type'] = np.select(conditions, choices, default='On Target')
 
         return {
             "processed_df": df,
@@ -167,22 +156,18 @@ class CapacityRiskCalculator:
             "downtime_sec": downtime_sec,
             "actual_output": actual_output,
             "optimal_output": optimal_output,
-            "loss_downtime_parts": loss_downtime,
-            "loss_slow_parts": loss_speed,
-            "gain_fast_parts": gain_speed,
+            "loss_downtime_parts": loss_dt,
+            "loss_slow_parts": loss_slow,
+            "gain_fast_parts": gain_fast,
             "total_shots": len(df),
             "normal_shots": len(prod_df),
-            "stops": df[df['stop_flag'] == 1].groupby('run_id').size().sum()
+            "stops": df[df['stop_flag'] == 1].groupby('run_id').size().sum(),
+            "mttr_min": (downtime_sec / 60 / df['stop_flag'].sum()) if df['stop_flag'].sum() > 0 else 0,
+            "stability_index": (prod_df['actual_ct'].sum() / total_runtime_sec * 100) if total_runtime_sec > 0 else 100
         }
 
-# ==============================================================================
-# --- AGGREGATION & INSIGHTS ---
-# ==============================================================================
-
 def get_supply_metrics(df, freq, engine_config):
-    """Aggregates metrics into time periods for charting."""
     if df.empty: return pd.DataFrame()
-    
     df = df.copy()
     if freq == 'Daily': df['Period'] = df['shot_time'].dt.date
     elif freq == 'Weekly': df['Period'] = df['shot_time'].dt.to_period('W').apply(lambda r: r.start_time)
@@ -196,35 +181,18 @@ def get_supply_metrics(df, freq, engine_config):
             'Actual Output': res['actual_output'],
             'Optimal Output': res['optimal_output'],
             'Downtime Loss': res['loss_downtime_parts'],
-            'Speed Loss': res['loss_slow_parts'],
-            'Speed Gain': res['gain_fast_parts'],
+            'Slow Loss': res['loss_slow_parts'],
+            'Fast Gain': res['gain_fast_parts'],
             'Run Time Sec': res['total_runtime_sec'],
-            'Downtime Sec': res['downtime_sec'],
-            'Total Shots': res['total_shots'],
-            'Normal Shots': res['normal_shots']
+            'Downtime Sec': res['downtime_sec']
         })
     return pd.DataFrame(data)
-
-def generate_capacity_insights(res):
-    """Generates natural language breakdown of constraints."""
-    if not res: return "No data."
-    
-    gap = res['optimal_output'] - res['actual_output']
-    if gap <= 0: return "Tooling is operating at or above theoretical capacity."
-    
-    dt_share = (res['loss_downtime_parts'] / gap * 100) if gap > 0 else 0
-    sl_share = (res['loss_slow_parts'] / gap * 100) if gap > 0 else 0
-    
-    primary = "Downtime" if dt_share > sl_share else "Slow Cycle Times"
-    
-    return f"The primary constraint is <b>{primary}</b>, representing {max(dt_share, sl_share):.1f}% of the uncaptured capacity."
 
 # ==============================================================================
 # --- VISUALIZATION ---
 # ==============================================================================
 
 def create_modern_gauge(value, title):
-    """Half-donut gauge for high-level KPIs."""
     color = PASTEL_COLORS['green']
     if value <= 50: color = PASTEL_COLORS['red']
     elif value <= 75: color = PASTEL_COLORS['orange']
@@ -237,19 +205,7 @@ def create_modern_gauge(value, title):
     fig.update_layout(title=dict(text=title, x=0.5, font=dict(size=18)), margin=dict(l=20, r=20, t=40, b=0), height=220, showlegend=False, paper_bgcolor='rgba(0,0,0,0)')
     return fig
 
-def create_time_donut(total_sec, prod_sec, down_sec):
-    """Donut for production vs downtime duration."""
-    fig = go.Figure(data=[go.Pie(
-        labels=['Production Time', 'RR Downtime'], values=[prod_sec, down_sec], hole=0.7,
-        marker=dict(colors=[PASTEL_COLORS['green'], PASTEL_COLORS['red']]), textinfo='none'
-    )])
-    center_text = f"Total Runtime<br><span style='font-size:22px; font-weight:bold;'>{format_seconds_to_dhm(total_sec)}</span>"
-    fig.add_annotation(text=center_text, x=0.5, y=0.5, font=dict(size=14, color='white'), showarrow=False)
-    fig.update_layout(title="Time Allocation Breakdown", showlegend=True, legend=dict(orientation="h", y=-0.1), height=300, margin=dict(t=50, b=50, l=20, r=20), paper_bgcolor='rgba(0,0,0,0)')
-    return fig
-
 def create_hybrid_chart(df_agg, cal_config):
-    """Volume Bars + Schedule Accomplishment + Stress Factor (Client Style)."""
     fig = go.Figure()
     fig.add_trace(go.Bar(x=df_agg['Period'], y=df_agg['Actual Output'], name='Actual Volume', marker_color=PASTEL_COLORS['blue'], yaxis='y1'))
     
@@ -262,75 +218,28 @@ def create_hybrid_chart(df_agg, cal_config):
         df_agg['Stress'] = (df_agg['Run Time Sec'] / 3600 / planned_hrs * 100).clip(upper=200)
         fig.add_trace(go.Scatter(x=df_agg['Period'], y=df_agg['Stress'], name='Tool Stress Factor %', line=dict(color=PASTEL_COLORS['stress_line'], width=2, dash='dot'), yaxis='y2'))
 
-    fig.update_layout(
-        template="plotly_dark", hovermode="x unified",
-        yaxis=dict(title="Parts Output"),
-        yaxis2=dict(title="Percentage (%)", overlaying='y', side='right', range=[0, 150], showgrid=False),
-        legend=dict(orientation="h", y=-0.2), height=480, paper_bgcolor='rgba(0,0,0,0)'
-    )
+    fig.update_layout(template="plotly_dark", hovermode="x unified", yaxis=dict(title="Parts Output"), yaxis2=dict(title="Percentage (%)", overlaying='y', side='right', range=[0, 150], showgrid=False), legend=dict(orientation="h", y=-0.2), height=480, paper_bgcolor='rgba(0,0,0,0)')
     return fig
 
 def plot_waterfall(res):
-    """Capacity Bridge: Optimal -> Losses -> Actual."""
     fig = go.Figure(go.Waterfall(
-        name="Capacity Bridge", orientation="v",
+        name="Loss Bridge", orientation="v",
         measure=["absolute", "relative", "relative", "relative", "total"],
-        x=["Optimal (Theory)", "Loss: Downtime", "Loss: Speed", "Gain: Speed", "Actual Output"],
+        x=["Optimal", "Loss: Downtime", "Loss: Speed", "Gain: Speed", "Actual"],
         y=[res['optimal_output'], -res['loss_downtime_parts'], -res['loss_slow_parts'], res['gain_fast_parts'], res['actual_output']],
         decreasing={"marker": {"color": PASTEL_COLORS['red']}},
         increasing={"marker": {"color": PASTEL_COLORS['green']}},
         totals={"marker": {"color": PASTEL_COLORS['blue']}}
     ))
-    fig.update_layout(title="Capacity Loss Bridge", template="plotly_dark", height=450)
-    return fig
-
-
-def plot_shot_analysis(df_shots):
-    """Scatter/Bar chart of every single shot cycle time."""
-    fig = go.Figure()
-    color_map = {'Slow Cycle': PASTEL_COLORS['red'], 'Fast Cycle': PASTEL_COLORS['orange'], 'On Target': PASTEL_COLORS['blue'], 'Downtime (Stop)': '#808080'}
-    
-    for stype, color in color_map.items():
-        sub = df_shots[df_shots['shot_type'] == stype]
-        if not sub.empty:
-            fig.add_trace(go.Bar(x=sub['shot_time'], y=sub['actual_ct'], name=stype, marker_color=color, hovertemplate='CT: %{y:.2f}s<br>Time: %{x}'))
-    
-    # Tolerance band rectangle
-    for _, run in df_shots.groupby('run_id'):
-        fig.add_shape(type="rect", x0=run['shot_time'].min(), x1=run['shot_time'].max(), y0=run['mode_lower'].iloc[0], y1=run['mode_upper'].iloc[0], fillcolor="grey", opacity=0.1, line_width=0)
-    
-    fig.update_layout(template="plotly_dark", title="Shot-by-Shot Cycle Analysis", yaxis_title="Seconds", height=400, yaxis_range=[0, df_shots['actual_ct'].quantile(0.98)*1.5])
-    return fig
-
-def create_stability_driver_bar(mtbf, mttr, stability):
-    """Stacked bar showing if frequency (MTBF) or duration (MTTR) is the driver."""
-    total = mtbf + mttr
-    if total == 0: return go.Figure()
-    
-    fig = go.Figure()
-    fig.add_trace(go.Bar(y=['Downtime Driver'], x=[mtbf], name=f'MTBF: {mtbf:.1f}m', orientation='h', marker_color=PASTEL_COLORS['blue']))
-    fig.add_trace(go.Bar(y=['Downtime Driver'], x=[mttr], name=f'MTTR: {mttr:.1f}m', orientation='h', marker_color=PASTEL_COLORS['red']))
-    
-    fig.update_layout(barmode='stack', template="plotly_dark", height=200, showlegend=True, title="MTTR vs MTBF Analysis", margin=dict(t=40, b=20, l=20, r=20))
+    fig.update_layout(title="Capacity Loss Bridge", template="plotly_dark", height=400)
     return fig
 
 def create_po_burnup(df_agg, target_qty, target_date):
-    """Burn-up chart with cumulative actuals vs PO target staircase."""
     df = df_agg.sort_values('Period').copy()
     df['Cumulative'] = df['Actual Output'].cumsum()
-    
     fig = go.Figure()
-    # Actuals
-    fig.add_trace(go.Scatter(x=df['Period'], y=df['Cumulative'], name='Actual Output', fill='tozeroy', line_color=PASTEL_COLORS['blue'], mode='lines+markers'))
-    
-    # PO Target Staircase
+    fig.add_trace(go.Scatter(x=df['Period'], y=df['Cumulative'], name='Cumulative Actual', fill='tozeroy', line_color=PASTEL_COLORS['blue']))
     if target_qty > 0:
-        fig.add_trace(go.Scatter(
-            x=[df['Period'].min(), target_date], 
-            y=[0, target_qty],
-            mode='lines', name='Demand Target Staircase',
-            line=dict(color=PASTEL_COLORS['purple'], dash='dash', shape='hv')
-        ))
-
-    fig.update_layout(template="plotly_dark", title="Supply Assurance Burn-up", xaxis_title="Time", yaxis_title="Cumulative Parts", height=450)
+        fig.add_trace(go.Scatter(x=[df['Period'].min(), target_date], y=[0, target_qty], mode='lines', name='Demand Target', line=dict(color=PASTEL_COLORS['purple'], dash='dash', shape='hv')))
+    fig.update_layout(template="plotly_dark", title="Supply Assurance Burn-up", height=450)
     return fig
