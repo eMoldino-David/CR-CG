@@ -1,31 +1,25 @@
 import streamlit as st
+import sys
 
 # ==============================================================================
-# --- BASE LEVEL CONNECTION TEST ---
+# --- BARE BONES CONNECTION TEST ---
 # ==============================================================================
 
-st.set_page_config(page_title="Streamlit Test", layout="centered")
+st.set_page_config(page_title="System Check", layout="centered")
 
-st.title("🚀 Streamlit Connection Test")
+st.title("🔧 System Diagnostic")
 
-st.success("If you can see this message, the Streamlit server is running correctly!")
+# Check if we can see the environment
+st.write(f"Python Version: {sys.version}")
 
-st.markdown("""
-### Environment Verification
-This is a base-level script designed to bypass all external utility files and complex data processing. 
-It confirms that:
-1. The `cr_CG.py` entry point is being found.
-2. Streamlit is able to render basic UI components.
-3. The server is responsive to interactions.
-""")
+st.success("The Streamlit script 'cr_CG.py' has loaded successfully.")
 
-# Test interaction
-name = st.text_input("Enter your name to test reactivity:", "User")
-if name:
-    st.write(f"Hello, **{name}**! The app is responding to your input.")
+st.info("If you are still seeing a 'ModuleNotFoundError' referring to a line that is a comment, please 'Reboot App' in the Streamlit Cloud dashboard to clear the cache.")
 
-st.sidebar.title("Sidebar Test")
-st.sidebar.info("Sidebar is working.")
+# Minimal Interactive Test
+st.subheader("Interactivity Test")
+val = st.slider("Move this slider to test reactivity", 0, 100, 50)
+st.write(f"The slider value is: {val}")
 
-if st.button("Click for a Balloon Test"):
+if st.button("Run Balloon Test"):
     st.balloons()
