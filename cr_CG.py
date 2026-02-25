@@ -911,9 +911,6 @@ def main():
     df_all = cr_CG_utils.load_all_data_cr(files)
     if df_all.empty: st.error("No valid data."); st.stop()
 
-    st.sidebar.markdown("### Navigation Mode")
-    nav_mode = st.sidebar.radio("View Mode", ["Single Tool View", "Hierarchical Roll-up"])
-
     # Detect if data actually contains hierarchical columns
     has_hierarchy = False
     for col in ['project_id', 'component_id', 'part_id']:
@@ -942,21 +939,14 @@ def main():
         df_part = df_all
 
     tool_ids = sorted(df_part['tool_id'].astype(str).unique().tolist())
-
     
     if not tool_ids:
         st.sidebar.warning("No tools found for this selection.")
         st.stop()
 
-    if nav_mode == "Single Tool View":
-        selected_tools = [st.sidebar.selectbox("Select Tool ID", tool_ids)]
-        tool_name_display = selected_tools[0]
-    else:
-        selected_tools = st.sidebar.multiselect("Select Tools (Roll-up)", tool_ids, default=tool_ids)
-        if not selected_tools:
-            st.sidebar.warning("Select at least one tool.")
-            st.stop()
-        tool_name_display = f"Roll-up ({len(selected_tools)} tools)"
+    st.sidebar.markdown("### Tool Selection")
+    selected_tool = st.sidebar.selectbox("Select Tool ID", tool_ids)
+    tool_name_display = selected_tool
 
     with st.sidebar.expander("Configure Metrics"):
         tolerance = st.slider("Tolerance Band", 0.01, 0.50, 0.05, 0.01)
@@ -972,7 +962,7 @@ def main():
               'downtime_gap_tolerance': downtime_gap_tolerance, 'run_interval_hours': run_interval_hours, 
               'default_cavities': default_cavities, 'remove_maintenance': remove_maint}
     
-    df_tool = df_part[df_part['tool_id'].astype(str).isin(selected_tools)]
+    df_tool = df_part[df_part['tool_id'].astype(str) == selected_tool]
 
     # --- TABS ---
     t_risk, t_opt, t_tgt, t_trend, t_fc = st.tabs(["Risk Tower", "Capacity (Optimal)", "Capacity (Target)", "Trends", "Forecast [Draft]"])
