@@ -1,126 +1,972 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import cr_CG_utils as utils
 from datetime import datetime, timedelta
+import plotly.express as px
+import plotly.graph_objects as go
+import cr_utils as cr_utils
 import importlib
 
-# Ensure fresh logic from the utility file
-importlib.reload(utils)
-
-st.set_page_config(layout="wide", page_title="Supply Control Tower", page_icon="🏭")
+# Force reload of utils to ensure latest logic is used
+importlib.reload(cr_utils)
 
 # ==============================================================================
-# --- SIDEBAR: DATA INTAKE ---
+# --- 🔒 SECURITY: Initial LOGIN ---
 # ==============================================================================
-st.sidebar.title("🏭 Asset Physics Tower")
+# This stops the app from loading ANY data until the password is correct.
 
-with st.sidebar.expander("📂 1. Data Intake", expanded=True):
-    p_files = st.file_uploader("Production Shot Data", accept_multiple_files=True)
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    if st.session_state.get("password_correct", False):
+        return True
 
-df_all = utils.load_production_data(p_files) if p_files else pd.DataFrame()
-
-if df_all.empty:
-    st.info("👋 Please upload production shot data in the sidebar to begin."); st.stop()
-
-# ==============================================================================
-# --- SIDEBAR: NAVIGATION & FILTERS ---
-# ==============================================================================
-with st.sidebar.expander("🔍 2. Analysis Scope", expanded=True):
-    nav_mode = st.radio("Navigation Mode", ["Single Tool View", "Hierarchical Breakdown"])
+    st.header("🔒 Protected Internal Tool")
+    password_input = st.text_input("Enter Company Password", type="password")
     
-    scope_df = df_all.copy()
-    
-    if nav_mode == "Hierarchical Breakdown":
-        # Project Filter
-        projs = ["All Projects"] + sorted(scope_df['project'].dropna().unique().tolist())
-        sel_proj = st.selectbox("Project", projs)
-        if sel_proj != "All Projects":
-            scope_df = scope_df[scope_df['project'] == sel_proj]
+    if password_input:
+        if password_input == st.secrets["APP_PASSWORD"]:
+            st.session_state["password_correct"] = True
+            st.rerun()  
+        else:
+            st.error("😕 Password incorrect")
             
-        # Component Filter
-        if 'component_id' in scope_df.columns:
-            comps = ["All Components"] + sorted(scope_df['component_id'].dropna().unique().tolist())
-            sel_comp = st.selectbox("Component", comps)
-            if sel_comp != "All Components":
-                scope_df = scope_df[scope_df['component_id'] == sel_comp]
+    return False
+
+if not check_password():
+    st.stop()  
+
+
+
+# ==============================================================================
+# --- PAGE CONFIG ---
+# ==============================================================================
+st.set_page_config(layout="wide", page_title="Capacity Risk Dashboard (v10.6)")
+
+# ==============================================================================
+# --- HELPER FUNCTIONS ---
+# ==============================================================================
+
+def create_capsule(value, color_logic="neutral", suffix="", inverse=False):
+    """
+    Generates an HTML string for a styled pill/capsule.
+    """
+    bg_color = "#262730" 
+    text_color = "#ffffff"
+    
+    if color_logic == "grey":
+        bg_color = "#41424C" 
+        text_color = "#ffffff"
+    elif color_logic == "good_bad":
+        if value >= 90: bg_color = cr_utils.PASTEL_COLORS['green']; text_color = "#0E1117"
+        elif value >= 75: bg_color = cr_utils.PASTEL_COLORS['orange']; text_color = "#0E1117"
+        else: bg_color = cr_utils.PASTEL_COLORS['red']; text_color = "#0E1117"
+    elif color_logic == "bad_good":
+        if value <= 10: bg_color = cr_utils.PASTEL_COLORS['green']; text_color = "#0E1117"
+        elif value <= 20: bg_color = cr_utils.PASTEL_COLORS['orange']; text_color = "#0E1117"
+        else: bg_color = cr_utils.PASTEL_COLORS['red']; text_color = "#0E1117"
+    elif color_logic == "net":
+        if value >= 0: bg_color = cr_utils.PASTEL_COLORS['green']; text_color = "#0E1117"
+        else: bg_color = cr_utils.PASTEL_COLORS['red']; text_color = "#0E1117"
+
+    return f'<span style="background-color:{bg_color}; color:{text_color}; padding:2px 8px; border-radius:10px; font-weight:bold; font-size:0.8em;">{value:,.1f}{suffix}</span>'
+
+# ==============================================================================
+# --- 1. RENDER FUNCTIONS ---
+# ==============================================================================
+
+def render_risk_tower(df_all_tools, config):
+    """Renders the Risk Tower (Tab 1)."""
+    st.title("Capacity Risk Tower")
+    st.info("This tower identifies tools at risk by analyzing weekly production gaps over the last 4 weeks.")
+
+    with st.expander("ℹ️ How the Risk Tower Works"):
+        st.markdown("""
+        The Risk Tower evaluates each tool based on its performance over its own most recent 4-week period.
         
-        # Part Filter
-        parts = ["All Parts"] + sorted(scope_df['part_id'].dropna().unique().tolist())
-        sel_part = st.selectbox("Part Number", parts)
-        if sel_part != "All Parts":
-            scope_df = scope_df[scope_df['part_id'] == sel_part]
+        ### 1. Risk Score (0-100)
+        Represents the **Average Capacity Achievement %** over the analysis period.
+        - **Formula:** `Average(Actual Output / Target Output)` across the active weeks.
+        - **Goal:** A score of 95+ indicates the tool is consistently meeting capacity demand.
+        
+        ### 2. Primary Risk Factor
+        Identifies the dominant root cause preventing the tool from hitting 100% capacity.
+        - **Downtime:** The majority of lost parts are due to machine stops (Run Rate Downtime).
+        - **Cycle Time:** The majority of lost parts are due to slow cycles (Running above Ideal CT).
+        - **Stable:** The tool is operating above 95% achievement; no significant risk detected.
+        
+        ### 3. Achievement Trend
+        Displays the weekly progression of Capacity Achievement to highlight stability.
+        - Shows: `Week 1 % → Week 2 % → Week 3 % → Week 4 %`
+        - Helps identify if performance is improving, degrading, or fluctuating wildly.
+        
+        ### 4. Details
+        Provides specific context on the magnitude of the risk.
+        - Displays the total **Net Parts Lost** attributed to the Primary Risk Factor.
+        """, unsafe_allow_html=True)
 
-    # Tooling selection (available in both modes, but usually final level in hierarchy)
-    tools = sorted(scope_df['tool_id'].unique().tolist())
-    if nav_mode == "Single Tool View":
-        selected_tool = st.selectbox("Select Tooling ID", tools)
-        display_name = selected_tool
-        filtered_df = scope_df[scope_df['tool_id'] == selected_tool]
+    results = []
+    tools = sorted(df_all_tools['tool_id'].unique())
+    
+    for tool_id in tools:
+        tool_df = df_all_tools[df_all_tools['tool_id'] == tool_id]
+        
+        weekly_df = cr_utils.get_aggregated_data(tool_df, 'Weekly', config)
+        
+        if weekly_df.empty:
+            continue
+            
+        recent = weekly_df.tail(4).copy()
+        
+        cols_needed = ['Actual Output', 'Target Output', 'Downtime Loss', 'Slow Loss']
+        for c in cols_needed:
+            if c not in recent.columns: recent[c] = 0
+            
+        recent['Target Output'] = recent['Target Output'].replace(0, 1)
+        recent['Achieve %'] = (recent['Actual Output'] / recent['Target Output'] * 100).fillna(0)
+        
+        trend_str = " → ".join([f"{x:.0f}%" for x in recent['Achieve %']])
+        
+        avg_achieve = recent['Achieve %'].mean()
+        risk_score = min(avg_achieve, 100)
+        
+        total_dt_loss = recent['Downtime Loss'].sum()
+        total_slow_loss = recent['Slow Loss'].sum()
+        net_gap = recent['Target Output'].sum() - recent['Actual Output'].sum()
+        
+        risk_factor = "Stable"
+        details = f"Running well. Overall achievement is {avg_achieve:.1f}%."
+        
+        if avg_achieve < 95:
+            if total_dt_loss > total_slow_loss:
+                risk_factor = "Downtime"
+                details = f"Primary loss driver is Downtime ({total_dt_loss:,.0f} parts lost)."
+            elif total_slow_loss > 0:
+                risk_factor = "Cycle Time"
+                details = f"Primary loss driver is Slow Cycles ({total_slow_loss:,.0f} parts lost)."
+            else:
+                risk_factor = "Unspecified"
+                details = f"Output is below target by {net_gap:,.0f} parts."
+        
+        p_min = recent['Period'].min()
+        p_max = recent['Period'].max()
+        if isinstance(p_min, pd.Period): p_min = p_min.start_time.date()
+        if isinstance(p_max, pd.Period): p_max = p_max.start_time.date() 
+
+        results.append({
+            "Tool ID": tool_id,
+            "Analysis Period": f"{p_min} to {p_max}",
+            "Risk Score": risk_score,
+            "Primary Risk Factor": risk_factor,
+            "Achievement Trend": trend_str,
+            "Details": details
+        })
+
+    if not results:
+        st.warning("Not enough data to generate the Risk Tower.")
+        return
+
+    risk_df = pd.DataFrame(results)
+
+    def style_risk_tower(row):
+        score = row['Risk Score']
+        styles = [''] * len(row)
+        
+        if score >= 90: base_color = cr_utils.PASTEL_COLORS['green']
+        elif score >= 75: base_color = cr_utils.PASTEL_COLORS['orange']
+        else: base_color = cr_utils.PASTEL_COLORS['red']
+        
+        return [f'background-color: {base_color}; color: black' for _ in row]
+
+    st.dataframe(
+        risk_df.style.apply(style_risk_tower, axis=1)
+        .format({'Risk Score': '{:.0f}'}),
+        use_container_width=True, 
+        hide_index=True
+    )
+
+def render_trends_tab(df_tool, config):
+    """Renders the Trends Tab."""
+    st.header("Historical Performance Trends")
+    st.info("Trends are calculated using 'Run-Based' logic consistent with the Dashboard.")
+
+    col_freq, col_mode, _ = st.columns([1, 1, 2])
+    with col_freq:
+        trend_freq = st.selectbox("Select Trend Frequency", ["Daily", "Weekly", "Monthly"], key="cr_trend_freq")
+    with col_mode:
+        trend_mode = st.selectbox("Dashboard Mode", ["Optimal", "Target"], key="cr_trend_mode")
+
+    agg_df = cr_utils.get_aggregated_data(df_tool, trend_freq, config)
+    
+    if agg_df.empty:
+        st.warning("No trend data available.")
+        return
+
+    col_map = {
+        'Run Time': 'Total Run Duration',
+        'Downtime': 'Run Rate Downtime',
+        'Production Time': 'Production Time'
+    }
+    agg_df = agg_df.rename(columns=col_map)
+
+    display_cols = ['Period', 'Total Run Duration', 'Run Rate Downtime']
+    
+    if trend_mode == "Optimal":
+        opt_cols = ['Actual Output', 'Optimal Output', 'Total Loss', 'Downtime Loss', 'Slow Loss', 'Fast Gain']
+        display_cols.extend([c for c in opt_cols if c in agg_df.columns])
     else:
-        selected_tools = st.multiselect("Select Tools (Aggregate)", tools, default=tools)
-        display_name = f"Aggregated {len(selected_tools)} Tools"
-        filtered_df = scope_df[scope_df['tool_id'].isin(selected_tools)]
+        if 'Target Output' in agg_df.columns:
+            agg_df['Net Diff (vs Target)'] = agg_df['Actual Output'] - agg_df['Target Output']
+            display_cols.extend(['Actual Output', 'Target Output', 'Net Diff (vs Target)'])
 
-# ==============================================================================
-# --- SIDEBAR: PHYSICS CONFIG ---
-# ==============================================================================
-with st.sidebar.expander("⚙️ 3. Physics & Capacity Settings"):
-    tolerance = st.slider("CT Tolerance Band", 0.01, 0.50, 0.05, 0.01)
-    downtime_gap_tolerance = st.slider("Downtime Gap (sec)", 0.0, 5.0, 2.0, 0.5)
-    run_interval_hours = st.slider("Run Interval (hours)", 1, 24, 8, 1)
-    target_output_perc = st.slider("Target Output %", 50, 100, 90)
-    default_cavities = st.number_input("Default Cavities", 1)
+    view_df = agg_df[display_cols].copy()
 
-    config = {
-        'tolerance': tolerance, 
-        'downtime_gap_tolerance': downtime_gap_tolerance, 
-        'run_interval_hours': run_interval_hours, 
-        'default_cavities': default_cavities,
-        'target_output_perc': target_output_perc
+    def style_trends(row):
+        styles = [''] * len(row)
+        for i, col in enumerate(view_df.columns):
+            val = row[col]
+            if isinstance(val, (int, float)):
+                if 'Loss' in col and 'Net' not in col: 
+                    if val > 0: styles[i] = 'color: #ff6961' 
+                elif 'Gain' in col:
+                    if val > 0: styles[i] = 'color: #77dd77' 
+                elif 'Net' in col or 'Diff' in col:
+                    if val < 0: styles[i] = 'color: #ff6961' 
+                    elif val > 0: styles[i] = 'color: #77dd77' 
+        return styles
+
+    st.dataframe(
+        view_df.style.apply(style_trends, axis=1).format(precision=1), 
+        use_container_width=True, 
+        hide_index=True
+    )
+
+    st.subheader("Visual Trend")
+    metric_to_plot = st.selectbox("Select Metric to Visualize", 
+                                  ['Actual Output', 'Optimal Output', 'Target Output', 'Total Loss', 'Total Run Duration', 'Run Rate Downtime'],
+                                  key="cr_trend_viz_select")
+    
+    if metric_to_plot in agg_df.columns:
+        fig = px.line(agg_df, x='Period', y=metric_to_plot, markers=True, title=f"{metric_to_plot} Trend")
+        
+        if "Output" in metric_to_plot:
+            if metric_to_plot != "Actual Output":
+                 fig.add_trace(go.Scatter(x=agg_df['Period'], y=agg_df['Actual Output'], mode='lines+markers', name='Actual Output', line=dict(dash='dot', color='blue')))
+            if metric_to_plot != "Target Output" and "Target Output" in agg_df.columns:
+                 fig.add_trace(go.Scatter(x=agg_df['Period'], y=agg_df['Target Output'], mode='lines', name='Target Output', line=dict(color='green', width=1)))
+            if metric_to_plot != "Optimal Output" and "Optimal Output" in agg_df.columns:
+                 fig.add_trace(go.Scatter(x=agg_df['Period'], y=agg_df['Optimal Output'], mode='lines', name='Optimal Output', line=dict(color='orange', width=1, dash='dash')))
+        
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning(f"Metric {metric_to_plot} not found in data.")
+
+def render_forecast_tab(df_tool, config):
+    """Renders the Forecast [Draft] Tab."""
+    st.header("Future Capacity Projection [Draft]")
+    st.info("This module uses historical daily run rates to project future cumulative output.")
+
+    with st.expander("ℹ️ How Prediction Works (Formulas & Logic)", expanded=False):
+        st.markdown("""
+        This model projects future capacity based on historical daily performance.
+
+        ### 1. 🔵 Blue Line: Forecast (Average Rate)
+        Projects future output using your **Average Daily Rate** calculated from the selected 'History From Date'.
+        - **Formula:** `Sum(Actual Output in Period) / Count(Days in Period)`
+        - **Logic:** Assumes you will continue to produce at your historical average pace.
+
+        ### 2. 🟢 Green Line: Best Case (Peak Rate)
+        Projects output using your **Peak Daily Rate** (90th percentile).
+        - **Formula:** `Percentile(Daily Output Values, 90)`
+        - **Logic:** Shows what is possible if the tool runs consistently at its proven best capability (excluding outliers).
+
+        ### 3. 🟠 Orange Line: Required Rate
+        Shows the daily output required to hit your Demand Goal by the Target Date.
+        - **Formula:** `(Demand Goal - Current Cumulative Output) / Days Remaining`
+        - **Logic:** This is the "Gap Closure" rate needed to finish on time.
+
+        ---
+        ### ⚠️ Reliability Note: Calendar vs. Active Days
+        This forecast uses an **"Effective Calendar Rate"** (Total Output ÷ Total Days Elapsed).
+        - **Why?** This is usually **more reliable** for predicting completion dates because it inherently accounts for your typical schedule (e.g., weekends, holidays, sporadic runs).
+        - **Assumption:** It assumes your *future* run frequency (days per week) will be similar to the *historical* period you selected.
+        """, unsafe_allow_html=True)
+
+    agg_daily = cr_utils.get_aggregated_data(df_tool, 'Daily', config)
+    
+    if agg_daily.empty:
+        st.warning("Not enough daily data to generate a forecast.")
+        return
+
+    c_ctrl, c_chart = st.columns([1, 2])
+    
+    with c_ctrl:
+        with st.container(border=True):
+            st.markdown("#### Forecast Settings")
+            
+            data_min = pd.to_datetime(agg_daily['Period']).min().date()
+            data_max = pd.to_datetime(agg_daily['Period']).max().date()
+            
+            hist_start_date = st.date_input("History From Date", data_min, min_value=data_min, max_value=data_max, key="fc_hist_start")
+            tgt_date = st.date_input("Target Date", data_max + timedelta(days=30), min_value=data_max, key="fc_date")
+            dem_goal = st.number_input("Demand Goal (Total Parts)", 0, step=1000, key="fc_goal")
+            
+    agg_filtered = agg_daily[pd.to_datetime(agg_daily['Period']).dt.date >= hist_start_date]
+
+    if agg_filtered.empty:
+        st.warning("No data available for the selected history range.")
+        return
+
+    with c_chart:
+        pred = cr_utils.generate_prediction_data(agg_filtered, data_max, tgt_date, dem_goal)
+        
+        fig = cr_utils.plot_prediction_chart(pred, dem_goal)
+        fig.update_layout(title="Future Capacity Projection")
+        st.plotly_chart(fig, use_container_width=True, key="fc_chart")
+        
+        analysis_html = ""
+        if dem_goal > 0 and pred:
+            current_cum = pred['historic_cum'].iloc[-1]
+            remaining = dem_goal - current_cum
+            avg_rate = pred['rates']['avg']
+            days_needed = remaining / avg_rate if avg_rate > 0 else 9999
+            finish_date = data_max + timedelta(days=int(days_needed))
+            is_late = finish_date > tgt_date
+            status_color = "#ff6961" if is_late else "#77dd77"
+            status_text = "LATE - AT RISK" if is_late else "ON TRACK"
+            
+            analysis_html = f"""
+            <div style="background-color: #262730; padding: 15px; border-radius: 5px; border: 1px solid #41424C;">
+                <h4 style="margin-top:0;">Forecast Analysis</h4>
+                <ul>
+                    <li><strong>Status:</strong> <span style="color:{status_color}; font-weight:bold;">{status_text}</span> to meet demand by {tgt_date}.</li>
+                    <li>To meet demand of <strong>{dem_goal:,.0f}</strong>, you need <strong>{remaining:,.0f}</strong> more parts.</li>
+                    <li>At your current rate ({avg_rate:,.0f}/day), you are projected to finish on <strong>{finish_date}</strong>.</li>
+                </ul>
+            </div>
+            """
+        else:
+             analysis_html = cr_utils.generate_forecast_insights(pred, dem_goal)
+
+        st.markdown(analysis_html, unsafe_allow_html=True)
+
+
+def render_dashboard(df_tool, tool_name, config, dashboard_mode="Optimal"):
+    """
+    Renders the Main Capacity Dashboard.
+    """
+    benchmark_mode = "Optimal Output" if dashboard_mode == "Optimal" else "Target Output"
+    key_suffix = f"_{dashboard_mode.lower()}"
+
+    # --- Controls ---
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        analysis_level = st.radio(f"Select Analysis Level ({dashboard_mode})",
+            options=["Daily (by Run)", "Weekly (by Run)", "Monthly (by Run)", "Custom Period"],
+            horizontal=True, key=f"cr_analysis_level{key_suffix}")
+    with c2:
+        enable_filter = st.toggle("Filter Small Runs", value=False, key=f"cr_filter_runs{key_suffix}")
+        min_shots_filter = 1
+        if enable_filter: min_shots_filter = st.number_input("Min Shots per Run", 1, 1000, 10, key=f"cr_min_shots{key_suffix}")
+
+    st.markdown("---")
+
+    base_calc = cr_utils.CapacityRiskCalculator(df_tool, **config)
+    df_processed = base_calc.results.get('processed_df', pd.DataFrame())
+    
+    if df_processed.empty: st.error("No data."); return
+    if enable_filter:
+        run_counts = df_processed.groupby('run_id')['run_id'].transform('count')
+        df_processed = df_processed[run_counts >= min_shots_filter]
+
+    # --- Selection ---
+    df_view = pd.DataFrame(); sub_header = ""
+    if "Daily" in analysis_level:
+        dates = sorted(df_processed['shot_time'].dt.date.unique())
+        sel_date = st.selectbox("Select Date", dates, index=len(dates)-1, format_func=lambda x: x.strftime('%d %b %Y'), key=f"cr_date_select{key_suffix}")
+        df_view = df_processed[df_processed['shot_time'].dt.date == sel_date]
+        sub_header = f"Summary for {sel_date.strftime('%d %b %Y')} | {tool_name}"
+    elif "Weekly" in analysis_level:
+        df_processed['week_lbl'] = df_processed['shot_time'].dt.to_period('W')
+        weeks = sorted(df_processed['week_lbl'].unique())
+        sel_week = st.selectbox("Select Week", weeks, index=len(weeks)-1, key=f"cr_week_select{key_suffix}")
+        df_view = df_processed[df_processed['week_lbl'] == sel_week]
+        sub_header = f"Summary for {sel_week} | {tool_name}"
+    elif "Monthly" in analysis_level:
+        df_processed['month_lbl'] = df_processed['shot_time'].dt.to_period('M')
+        months = sorted(df_processed['month_lbl'].unique())
+        sel_month = st.selectbox("Select Month", months, index=len(months)-1, format_func=lambda x: x.strftime('%B %Y'), key=f"cr_month_select{key_suffix}")
+        df_view = df_processed[df_processed['month_lbl'] == sel_month]
+        sub_header = f"Summary for {sel_month.strftime('%B %Y')} | {tool_name}"
+    else:
+        d_min = df_processed['shot_time'].min().date(); d_max = df_processed['shot_time'].max().date()
+        c1, c2 = st.columns(2)
+        s_date = c1.date_input("Start Date", d_min, key=f"d1{key_suffix}"); e_date = c2.date_input("End Date", d_max, key=f"d2{key_suffix}")
+        if s_date and e_date:
+            df_view = df_processed[(df_processed['shot_time'].dt.date >= s_date) & (df_processed['shot_time'].dt.date <= e_date)]
+            sub_header = f"Summary for {s_date} to {e_date} | {tool_name}"
+
+    if df_view.empty: st.warning("No data found."); return
+
+    # --- Calculations ---
+    run_breakdown_df = cr_utils.calculate_run_summaries(df_view, config)
+    if run_breakdown_df.empty: st.warning("No runs found."); return
+
+    total_runtime = run_breakdown_df['total_runtime_sec'].sum()
+    prod_time = run_breakdown_df['production_time_sec'].sum()
+    downtime = run_breakdown_df['downtime_sec'].sum()
+    total_cap_loss_sec = run_breakdown_df['total_capacity_loss_sec'].sum()
+    total_shots = run_breakdown_df['total_shots'].sum()
+    normal_shots = run_breakdown_df['normal_shots'].sum()
+    stop_events = run_breakdown_df['stop_events'].sum()
+    
+    opt_output = run_breakdown_df['optimal_output_parts'].sum()
+    tgt_output = run_breakdown_df['target_output_parts'].sum() if 'target_output_parts' in run_breakdown_df.columns else (opt_output * (config['target_output_perc']/100.0))
+    act_output = run_breakdown_df['actual_output_parts'].sum()
+    
+    loss_downtime = run_breakdown_df['capacity_loss_downtime_parts'].sum()
+    loss_slow = run_breakdown_df['capacity_loss_slow_parts'].sum()
+    gain_fast = run_breakdown_df['capacity_gain_fast_parts'].sum()
+    total_loss_parts = run_breakdown_df['total_capacity_loss_parts'].sum()
+
+    eff_rate = (normal_shots / total_shots * 100) if total_shots > 0 else 0
+    stab_index = (prod_time / total_runtime * 100) if total_runtime > 0 else 0
+    mttr_min = (downtime / 60 / stop_events) if stop_events > 0 else 0
+    mtbf_min = (prod_time / 60 / stop_events) if stop_events > 0 else (prod_time / 60)
+
+    if dashboard_mode == "Target":
+        benchmark_output = tgt_output
+        net_diff = act_output - tgt_output
+    else:
+        benchmark_output = opt_output
+        net_diff = act_output - opt_output
+
+    res = {
+        'total_runtime_sec': total_runtime, 'production_time_sec': prod_time, 'downtime_sec': downtime,
+        'total_capacity_loss_sec': total_cap_loss_sec, 'efficiency_rate': eff_rate, 'stability_index': stab_index,
+        'mttr_min': mttr_min, 'mtbf_min': mtbf_min, 'optimal_output_parts': opt_output,
+        'target_output_parts': tgt_output, 'actual_output_parts': act_output, 'total_shots': total_shots,
+        'normal_shots': normal_shots, 'stop_events': stop_events, 'capacity_loss_downtime_parts': loss_downtime,
+        'capacity_loss_slow_parts': loss_slow, 'capacity_gain_fast_parts': gain_fast,
+        'total_capacity_loss_parts': total_loss_parts, 'processed_df': df_view 
     }
 
-# ==============================================================================
-# --- MAIN UI DASHBOARD ---
-# ==============================================================================
-st.title("🏭 Production Asset Health")
+    # --- Header & Export ---
+    c_head, c_btn = st.columns([3, 1])
+    with c_head: st.subheader(sub_header)
+    with c_btn:
+        st.download_button(
+            label="📥 Export Capacity Report",
+            data=cr_utils.prepare_and_generate_capacity_excel(df_view, config),
+            file_name=f"Capacity_Report_{datetime.now():%Y%m%d}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=f"dl_btn_{key_suffix}"
+        )
 
-if filtered_df.empty:
-    st.warning("No data found for the current selection."); st.stop()
-
-# Tabs based on the original app's logic
-t_risk, t_opt, t_tgt, t_trend = st.tabs([
-    "🗼 Risk Tower", 
-    "🛠️ Capacity (Optimal)", 
-    "🎯 Capacity (Target)", 
-    "📈 Trends"
-])
-
-with t_risk:
-    utils.render_risk_tower(df_all, config)
-
-with t_opt:
-    utils.render_dashboard(filtered_df, display_name, config, mode="Optimal")
-
-with t_tgt:
-    # Logic: Target basis uses the target_output_perc from config
-    utils.render_dashboard(filtered_df, display_name, config, mode="Target")
-
-with t_trend:
-    st.subheader("Asset Performance Trends")
-    # Simple weekly aggregation for the trend view
-    df_trend = filtered_df.copy()
-    df_trend['Week'] = df_trend['shot_time'].dt.to_period('W').apply(lambda r: r.start_time)
+    # ==========================================================================
+    # --- VISUAL KPI DASHBOARD (New Section) ---
+    # ==========================================================================
     
-    trend_stats = []
-    for week, subset in df_trend.groupby('Week'):
-        calc = utils.CapacityRiskCalculator(subset, **config)
-        res = calc.results
-        trend_stats.append({
-            'Week': week,
-            'Actual Output': res['actual_output'],
-            'Stability %': res['stability_index'],
-            'Efficiency %': (res['normal_shots'] / res['total_shots'] * 100) if res['total_shots'] > 0 else 0
+    st.plotly_chart(
+        cr_utils.create_time_breakdown_donut(
+            res['total_runtime_sec'], 
+            res['production_time_sec'], 
+            res['downtime_sec']
+        ), 
+        use_container_width=True,
+        key=f"time_donut_{key_suffix}"
+    )
+    
+    c_g1, c_g2 = st.columns(2)
+    with c_g1:
+        with st.container(border=True):
+             st.plotly_chart(
+                cr_utils.create_modern_gauge(res['efficiency_rate'], "Run Rate Efficiency"),
+                use_container_width=True,
+                key=f"eff_gauge_{key_suffix}"
+             )
+             st.markdown(f"""
+             <div style='text-align: center; font-size: 14px; color: #a0a0a0; margin-bottom: 10px;'>
+                {res['normal_shots']:,} / {res['total_shots']:,} (Normal Shots / Total Shots)
+             </div>
+             """, unsafe_allow_html=True)
+             
+             st.markdown(f"""
+             <div style='text-align: center; font-size: 12px; margin-top: 5px;'>
+                <span style='color:{cr_utils.PASTEL_COLORS['red']};'>● 0-50%</span> &nbsp;
+                <span style='color:{cr_utils.PASTEL_COLORS['orange']};'>● 50-70%</span> &nbsp;
+                <span style='color:{cr_utils.PASTEL_COLORS['green']};'>● 70-100%</span>
+             </div>
+             """, unsafe_allow_html=True)
+
+    with c_g2:
+        with st.container(border=True):
+             st.plotly_chart(
+                cr_utils.create_modern_gauge(res['stability_index'], "Run Rate Stability Index"),
+                use_container_width=True,
+                key=f"stab_gauge_{key_suffix}"
+             )
+             prod_str = cr_utils.format_seconds_to_dhm(res['production_time_sec'])
+             total_str = cr_utils.format_seconds_to_dhm(res['total_runtime_sec'])
+             st.markdown(f"""
+             <div style='text-align: center; font-size: 14px; color: #a0a0a0; margin-bottom: 10px;'>
+                {prod_str} / {total_str} (Production Time / Total Run Duration)
+             </div>
+             """, unsafe_allow_html=True)
+             
+             st.markdown(f"""
+             <div style='text-align: center; font-size: 12px; margin-top: 5px;'>
+                <span style='color:{cr_utils.PASTEL_COLORS['red']};'>● 0-50%</span> &nbsp;
+                <span style='color:{cr_utils.PASTEL_COLORS['orange']};'>● 50-70%</span> &nbsp;
+                <span style='color:{cr_utils.PASTEL_COLORS['green']};'>● 70-100%</span>
+             </div>
+             """, unsafe_allow_html=True)
+    
+    with st.container(border=True):
+        st.plotly_chart(
+            cr_utils.create_stability_driver_bar(res['mtbf_min'], res['mttr_min'], res['stability_index']),
+            use_container_width=True,
+            key=f"stab_driver_{key_suffix}"
+        )
+        
+        with st.expander("🔍 View Correlation Analysis"):
+            st.markdown(cr_utils.generate_mttr_mtbf_analysis(run_breakdown_df), unsafe_allow_html=True)
+
+    # ==========================================================================
+    # --- NUMERIC METRICS (KPI Grid 3) ---
+    # ==========================================================================
+    with st.container(border=True):
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Total Shots", f"{res['total_shots']:,.0f}")
+        
+        with c2:
+            pct_normal = (res['normal_shots'] / res['total_shots'] * 100) if res['total_shots'] > 0 else 0
+            st.metric("Normal Shots", f"{res['normal_shots']:,.0f}")
+            st.markdown(create_capsule(pct_normal, "grey", "%"), unsafe_allow_html=True)
+        
+        c3.metric(f"Total {dashboard_mode} (Parts)", f"{benchmark_output:,.0f}")
+        
+        with c4:
+            pct_achieve = (res['actual_output_parts'] / benchmark_output * 100) if benchmark_output > 0 else 0
+            st.metric("Actual Output (Parts)", f"{res['actual_output_parts']:,.0f}")
+            st.markdown(create_capsule(pct_achieve, "grey", "%"), unsafe_allow_html=True)
+            
+        with c5:
+            label = "Net Gain (Parts)" if net_diff >= 0 else "Net Loss (Parts)"
+            pct_diff = (net_diff / benchmark_output * 100) if benchmark_output > 0 else 0
+            st.metric(label, f"{abs(net_diff):,.0f}")
+            st.markdown(create_capsule(pct_diff, "net", "%"), unsafe_allow_html=True)
+
+    with st.expander("ℹ️ Metric Definitions"):
+        st.markdown(f"""
+        ### 1. Run Rate Efficiency
+        **Definition:** The ratio of high-quality, validated cycles to the total cycles attempted.
+        - **Formula:** `Normal Shots / Total Shots`
+        - **Why it matters:** Indicates process capability and adherence to standard cycle times.
+
+        ### 2. Run Rate Stability Index
+        **Definition:** The percentage of total run time where the machine was actively producing parts (not stopped).
+        - **Formula:** `Total Production Time / Total Run Duration`
+        - **Why it matters:** Measures machine availability during scheduled runs.
+
+        ### 3. Run Rate MTTR (Mean Time To Repair)
+        **Definition:** The average time taken to resolve a stop and resume production.
+        - **Formula:** `Total Downtime / Number of Stop Events`
+        - **Why it matters:** Highlights the speed of response and repair efficiency.
+
+        ### 4. Run Rate MTBF (Mean Time Between Failures)
+        **Definition:** The average duration of uninterrupted production between two stop events.
+        - **Formula:** `Total Production Time / Number of Stop Events`
+        - **Why it matters:** Indicates the reliability and consistency of the process.
+
+        ### 5. Capacity Outputs
+        - **Total {dashboard_mode}:** The theoretical maximum output based on ideal conditions ({ "Time / Ideal CT" if dashboard_mode == "Optimal" else "Optimal * Target %" }).
+        - **Actual Output:** The total number of good parts produced.
+        - **Net Loss/Gain:** The difference between Actual Output and the Benchmark ({dashboard_mode}).
+        """)
+
+    with st.container(border=True):
+        c1, c2 = st.columns([1,3])
+        c1.metric("Approved CT", f"{df_view['approved_ct'].mean():.2f} s")
+        rc1, rc2, rc3 = c2.columns(3)
+        rc1.metric("Lower Limit", f"{run_breakdown_df['mode_lower'].min():.2f}-{run_breakdown_df['mode_lower'].max():.2f} s")
+        rc2.metric("Mode CT", f"{run_breakdown_df['mode_ct'].min():.2f}-{run_breakdown_df['mode_ct'].max():.2f} s")
+        rc3.metric("Upper Limit", f"{run_breakdown_df['mode_upper'].min():.2f}-{run_breakdown_df['mode_upper'].max():.2f} s")
+
+    st.markdown("---")
+
+    with st.expander("🤖 View Automated Analysis Summary", expanded=True):
+        insights = cr_utils.generate_capacity_insights(res, dashboard_mode)
+        st.markdown(f"""
+        **Overall:** {insights['overall']}  
+        **Drivers:** {insights['drivers']}  
+        **Recommendation:** {insights['recommendation']}
+        """, unsafe_allow_html=True)
+    
+    with st.expander("View Detailed Run Breakdown Table", expanded=False):
+        d_df = run_breakdown_df.copy()
+        
+        d_df = d_df.sort_values('start_time').reset_index(drop=True)
+        d_df['RUN ID'] = d_df.index.map(lambda x: f"Run {x+1:03d}")
+        
+        d_df["Period"] = d_df.apply(lambda row: f"{row['start_time'].strftime('%Y-%m-%d %H:%M')} to {row['end_time'].strftime('%Y-%m-%d %H:%M')}", axis=1)
+        
+        d_df['Run Rate MTTR (min)'] = (d_df['downtime_sec'] / 60) / d_df['stop_events'].replace(0, 1)
+        d_df.loc[d_df['stop_events'] == 0, 'Run Rate MTTR (min)'] = 0
+        
+        d_df['Run Rate MTBF (min)'] = (d_df['production_time_sec'] / 60) / d_df['stop_events'].replace(0, 1)
+        d_df.loc[d_df['stop_events'] == 0, 'Run Rate MTBF (min)'] = d_df['production_time_sec'] / 60
+
+        d_df["Total Run Duration"] = d_df['total_runtime_sec'].apply(cr_utils.format_seconds_to_dhm)
+        d_df["Production Time"] = d_df['production_time_sec'].apply(cr_utils.format_seconds_to_dhm)
+        d_df["Run Rate Downtime"] = d_df['downtime_sec'].apply(cr_utils.format_seconds_to_dhm)
+        
+        d_df = d_df.rename(columns={
+            'tool_ids': 'Tool(s)',
+            'total_shots': 'Total Shots',
+            'normal_shots': 'Normal Shots',
+            'stop_events': 'Stop Events',
+            'mode_ct': 'Mode CT',
+            'optimal_output_parts': 'Optimal Output',
+            'actual_output_parts': 'Actual Output',
+            'capacity_loss_downtime_parts': 'Loss (RR Downtime)',
+            'capacity_loss_slow_parts': 'Loss (Slow Cycles)',
+            'total_capacity_loss_parts': 'Total Net Loss'
         })
+
+        cols_to_show = [
+            'RUN ID', 'Tool(s)', 'Period', 'Total Shots', 'Normal Shots', 'Stop Events',
+            'Mode CT', 'Optimal Output', 'Actual Output',
+            'Loss (RR Downtime)', 'Loss (Slow Cycles)', 'Total Net Loss',
+            'Total Run Duration', 'Production Time', 'Run Rate Downtime',
+            'Run Rate MTTR (min)', 'Run Rate MTBF (min)'
+        ]
+        
+        st.dataframe(d_df[cols_to_show].style.format({
+            'Mode CT': '{:.2f}',
+            'Optimal Output': '{:,.0f}',
+            'Actual Output': '{:,.0f}',
+            'Loss (RR Downtime)': '{:,.0f}',
+            'Loss (Slow Cycles)': '{:,.0f}',
+            'Total Net Loss': '{:,.0f}',
+            'Run Rate MTTR (min)': '{:.1f}',
+            'Run Rate MTBF (min)': '{:.1f}'
+        }), use_container_width=True, hide_index=True)
+
+
+    st.subheader(f"Capacity Loss Waterfall (vs {dashboard_mode})")
     
-    st.dataframe(pd.DataFrame(trend_stats), use_container_width=True)
+    waterfall_mode = "Standard (Net)"
+    is_allocated = False
+    if dashboard_mode == "Target":
+        waterfall_mode = st.selectbox("Waterfall View Mode", ["Standard (Net)", "Allocated Impact"], key=f"wf_mode_{key_suffix}")
+        if waterfall_mode == "Allocated Impact":
+            is_allocated = True
+
+    c_chart, c_details = st.columns([1.5, 1]) 
+    gap_tgt = max(0, tgt_output - act_output)
+    
+    with c_chart:
+        if is_allocated and dashboard_mode == "Target":
+             net_loss_optimal = loss_downtime + (loss_slow - gain_fast)
+             alloc_dt = 0; alloc_slow = 0; alloc_fast = 0
+             if gap_tgt > 0 and net_loss_optimal > 0:
+                 scale_factor = gap_tgt / net_loss_optimal
+                 alloc_dt = loss_downtime * scale_factor
+                 alloc_slow = loss_slow * scale_factor
+                 alloc_fast = gain_fast * scale_factor
+             
+             y_dt = -alloc_dt
+             y_slow = -alloc_slow
+             y_fast = alloc_fast
+             
+             fig_wf = go.Figure(go.Waterfall(
+                name="Allocated Impact", orientation="v",
+                measure=["absolute", "relative", "relative", "relative", "total"],
+                x=["Target Output", "Allocated: Downtime", "Allocated: Slow Cycles", "Allocated: Fast Cycles", "Actual Output"],
+                y=[tgt_output, y_dt, y_slow, y_fast, act_output],
+                text=[f"{tgt_output:,.0f}", f"{abs(y_dt):,.0f}", f"{abs(y_slow):,.0f}", f"+{abs(y_fast):,.0f}", f"{act_output:,.0f}"],
+                textposition="outside",
+                connector={"line": {"color": "rgb(63, 63, 63)"}},
+                decreasing={"marker": {"color": cr_utils.PASTEL_COLORS['red']}},
+                increasing={"marker": {"color": cr_utils.PASTEL_COLORS['green']}},
+                totals={"marker": {"color": cr_utils.PASTEL_COLORS['blue']}}
+             ))
+             fig_wf.update_layout(title="Allocated Capacity Loss (Target -> Actual)", showlegend=False, height=450)
+             st.plotly_chart(fig_wf, use_container_width=True, key=f"waterfall_chart_{key_suffix}")
+        else:
+             st.plotly_chart(cr_utils.plot_waterfall(res, benchmark_mode), use_container_width=True, key=f"waterfall_chart_{key_suffix}")
+    
+    with c_details:
+        with st.container(border=True):
+            if is_allocated:
+                st.markdown(f"**Total Gap to Target**")
+                color_hex = "#ff6961" if gap_tgt > 0 else "#77dd77" 
+                st.markdown(f"<h2 style='color:{color_hex}; margin:0;'>-{gap_tgt:,.0f} parts</h2>", unsafe_allow_html=True)
+                st.caption("Gap allocated by root cause ratios")
+            else:
+                st.markdown(f"**Total Net Impact (vs {dashboard_mode})**")
+                color_hex = "#77dd77" if net_diff >= 0 else "#ff6961"
+                st.markdown(f"<h2 style='color:{color_hex}; margin:0;'>{net_diff:+,.0f} parts</h2>", unsafe_allow_html=True)
+                if dashboard_mode == "Optimal":
+                    st.caption(f"Net Time Lost: {cr_utils.format_seconds_to_dhm(res['total_capacity_loss_sec'])}")
+        
+        if is_allocated:
+            net_loss_optimal = loss_downtime + (loss_slow - gain_fast)
+            scale_factor = gap_tgt / net_loss_optimal if (gap_tgt > 0 and net_loss_optimal > 0) else 0
+            
+            a_dt = loss_downtime * scale_factor
+            a_sl = loss_slow * scale_factor
+            a_fg = gain_fast * scale_factor
+            
+            breakdown_data = [
+                {"Metric": "Target Output", "Parts": tgt_output},
+                {"Metric": "Actual Output", "Parts": act_output},
+                {"Metric": "Total Gap", "Parts": gap_tgt},
+                {"Metric": "--- Allocation ---", "Parts": 0},
+                {"Metric": "Allocated Impact: Downtime", "Parts": a_dt},
+                {"Metric": "Allocated Impact: Slow Cycles", "Parts": a_sl},
+                {"Metric": "Allocated Impact: Fast Cycles (Gain)", "Parts": a_fg},
+            ]
+        else:
+            net_cycle_loss = res['capacity_loss_slow_parts'] - res['capacity_gain_fast_parts']
+            breakdown_data = [
+                {"Metric": "Loss (RR Downtime)", "Parts": res['capacity_loss_downtime_parts']},
+                {"Metric": "Net Loss (Cycle Time)", "Parts": net_cycle_loss},
+                {"Metric": "└ Loss (Slow Cycles)", "Parts": res['capacity_loss_slow_parts']},
+                {"Metric": "└ Gain (Fast Cycles)", "Parts": res['capacity_gain_fast_parts']},
+            ]
+
+        df_breakdown = pd.DataFrame(breakdown_data)
+        
+        def style_breakdown(row):
+            styles = [''] * len(row)
+            if "Allocated" in row['Metric']:
+                 styles[0] = 'font-style: italic;'
+                 if "Gain" in row['Metric'] or "Fast" in row['Metric']:
+                     if row['Parts'] > 0: styles[1] = 'color: #77dd77;' 
+                 elif row['Parts'] > 0: 
+                     styles[1] = 'color: #ff6961;' 
+            
+            if row['Metric'] == "Total Gap":
+                 styles[1] = 'color: #ff6961; font-weight: bold;'
+            
+            if row['Metric'] == "Loss (RR Downtime)":
+                styles[1] = 'color: #ff6961; font-weight: bold;'
+            elif row['Metric'] == "Net Loss (Cycle Time)":
+                color = '#ff6961' if row['Parts'] > 0 else '#77dd77'
+                styles[1] = f'color: {color}; font-weight: bold;'
+            elif "Gain" in row['Metric']:
+                styles[1] = 'color: #77dd77;'
+            elif "Loss" in row['Metric'] and "Net" not in row['Metric']:
+                styles[1] = 'color: #ff6961;'
+            return styles
+
+        st.dataframe(
+            df_breakdown.style.apply(style_breakdown, axis=1).format({"Parts": "{:,.0f}"}), 
+            use_container_width=True, 
+            hide_index=True
+        )
+
+    st.markdown("---")
+
+    st.subheader(f"Performance Breakdown (Stacked Trend)")
+    st.info("View how capacity and losses were distributed over the selected period.")
+    
+    chart_freq = st.selectbox("Chart Aggregation", ["Daily", "Weekly", "Run"], key=f"chart_agg_{key_suffix}")
+    freq_map = {"Daily": "Daily", "Weekly": "Weekly", "Run": "by Run"}
+    
+    agg_chart_df = cr_utils.get_aggregated_data(df_view, freq_map[chart_freq], config)
+    if not agg_chart_df.empty:
+        st.plotly_chart(
+            cr_utils.plot_performance_breakdown(agg_chart_df, 'Period', benchmark_mode), 
+            use_container_width=True,
+            key=f"perf_breakdown_{key_suffix}"
+        )
+    else:
+        st.warning("Not enough data to generate breakdown chart.")
+
+    if not agg_chart_df.empty:
+        st.subheader(f"Production Totals Report ({chart_freq})")
+        
+        totals_df = agg_chart_df.copy()
+        if 'Production Time Sec' in totals_df and 'Run Time Sec' in totals_df:
+            totals_df['Actual Production Time'] = totals_df.apply(
+                lambda r: f"{cr_utils.format_seconds_to_dhm(r['Production Time Sec'])} ({r['Production Time Sec']/r['Run Time Sec']:.1%})" if r['Run Time Sec'] > 0 else "0m (0.0%)", 
+                axis=1
+            )
+        else:
+            totals_df['Actual Production Time'] = "N/A"
+
+        if 'Normal Shots' in totals_df and 'Total Shots' in totals_df:
+            totals_df['Production Shots (Pct)'] = totals_df.apply(
+                lambda r: f"{r['Normal Shots']:,.0f} ({r['Normal Shots']/r['Total Shots']:.1%})" if r['Total Shots'] > 0 else "0 (0.0%)", 
+                axis=1
+            )
+        else:
+            totals_df['Production Shots (Pct)'] = "N/A"
+        
+        totals_table = pd.DataFrame()
+        totals_table['Period'] = totals_df['Period']
+        totals_table['Total Run Duration'] = totals_df['Run Time'] + " (" + totals_df['Run Time Sec'].apply(lambda x: f"{x:.0f}s") + ")"
+        totals_table['Actual Production Time'] = totals_df['Actual Production Time']
+        totals_table['Total Shots'] = totals_df['Total Shots'].map('{:,.0f}'.format)
+        totals_table['Production Shots'] = totals_df['Production Shots (Pct)']
+        totals_table['Downtime Shots'] = totals_df['Downtime Shots'].map('{:,.0f}'.format)
+        
+        st.dataframe(totals_table, use_container_width=True, hide_index=True)
+
+        st.subheader(f"Capacity Loss & Gain Report (vs Optimal) ({chart_freq})")
+        
+        lg_table_opt = pd.DataFrame()
+        lg_table_opt['Period'] = totals_df['Period']
+        lg_table_opt['Optimal Output'] = totals_df['Optimal Output'].map('{:,.2f}'.format)
+        lg_table_opt['Actual Output'] = totals_df['Actual Output'].map('{:,.2f}'.format)
+        
+        lg_table_opt['Loss (Downtime)'] = totals_df['Downtime Loss'].map('{:,.2f}'.format)
+        lg_table_opt['Loss (Slow Cycles)'] = totals_df['Slow Loss'].map('{:,.2f}'.format)
+        lg_table_opt['Gain (Fast Cycles)'] = totals_df['Fast Gain'].map('{:,.2f}'.format)
+        lg_table_opt['Total Net Loss'] = totals_df['Total Loss'].map('{:,.2f}'.format)
+
+        def style_loss_gain(col):
+            col_name = col.name
+            if 'Loss' in col_name: 
+                return ['color: #ff6961'] * len(col) 
+            if 'Gain' in col_name: 
+                return ['color: #77dd77'] * len(col) 
+            if col_name == 'Total Net Loss':
+                return ['font-weight: bold'] * len(col)
+            return [''] * len(col)
+
+        st.dataframe(lg_table_opt.style.apply(style_loss_gain, axis=0), use_container_width=True, hide_index=True)
+
+        if dashboard_mode == "Target" and 'Target Output' in totals_df.columns:
+            st.subheader(f"Capacity Loss & Gain Report (vs Target) [Allocated] ({chart_freq})")
+            
+            tgt_table = pd.DataFrame()
+            tgt_table['Period'] = totals_df['Period']
+            tgt_table['Target Output'] = totals_df['Target Output'].map('{:,.2f}'.format)
+            tgt_table['Actual Output'] = totals_df['Actual Output'].map('{:,.2f}'.format)
+            
+            def calc_alloc(row):
+                gap = max(0, row['Target Output'] - row['Actual Output'])
+                net_loss_opt = row['Downtime Loss'] + (row['Slow Loss'] - row['Fast Gain'])
+                scale = gap / net_loss_opt if (gap > 0 and net_loss_opt > 0) else 0
+                
+                dt_alloc = row['Downtime Loss'] * scale
+                slow_alloc = row['Slow Loss'] * scale
+                fast_alloc = row['Fast Gain'] * scale
+                return pd.Series([gap, dt_alloc, slow_alloc, fast_alloc])
+
+            alloc_res = totals_df.apply(calc_alloc, axis=1)
+            alloc_res.columns = ['Gap', 'Alloc_DT', 'Alloc_Slow', 'Alloc_Fast']
+            
+            tgt_table['Gap to Target'] = alloc_res['Gap'].map('{:,.2f}'.format)
+            tgt_table['Allocated: Downtime'] = alloc_res['Alloc_DT'].map('{:,.2f}'.format)
+            tgt_table['Allocated: Slow Cycles'] = alloc_res['Alloc_Slow'].map('{:,.2f}'.format)
+            tgt_table['Allocated: Fast Cycles (Gain)'] = alloc_res['Alloc_Fast'].map('{:,.2f}'.format)
+            
+            def style_target_alloc(col):
+                if 'Gap' in col.name or 'Allocated' in col.name:
+                    if 'Gain' in col.name or 'Fast' in col.name:
+                        return ['color: #77dd77'] * len(col) 
+                    return ['color: #ff6961'] * len(col) 
+                return [''] * len(col)
+
+            st.dataframe(tgt_table.style.apply(style_target_alloc, axis=0), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    st.subheader("Shot Analysis")
+    st.plotly_chart(cr_utils.plot_shot_analysis(res['processed_df']), use_container_width=True, key=f"shot_analysis_{key_suffix}")
+    
+    with st.expander("View Shot Data Table", expanded=False):
+            cols_to_show = ['tool_id', 'shot_time', 'actual_ct', 'adj_ct_sec', 'time_diff_sec', 'stop_flag', 'stop_event']
+            rename_map = {
+                'tool_id': 'Tool ID',
+                'shot_time': 'Date / Time',
+                'actual_ct': 'Actual CT (sec)',
+                'adj_ct_sec': 'Adjusted CT (sec)',
+                'time_diff_sec': 'Time Difference (sec)',
+                'stop_flag': 'Stop Flag',
+                'stop_event': 'Stop Event'
+            }
+            if 'run_id' in res['processed_df'].columns:
+                cols_to_show.append('run_id')
+                rename_map['run_id'] = 'Run ID'
+                
+            df_shot_data = res['processed_df'][cols_to_show].copy()
+            df_shot_data.rename(columns=rename_map, inplace=True)
+            st.dataframe(df_shot_data)
+
+# ==============================================================================
+# --- MAIN ENTRY POINT ---
+# ==============================================================================
+
+def main():
+    st.sidebar.title("Capacity Risk v10.6")
+    files = st.sidebar.file_uploader("Upload Data (Excel/CSV)", accept_multiple_files=True, type=['xlsx', 'csv', 'xls'])
+    if not files: st.info("👈 Upload files."); st.stop()
+    
+    df_all = cr_utils.load_all_data_cr(files)
+    if df_all.empty: st.error("No valid data."); st.stop()
+
+    st.sidebar.markdown("### Navigation Mode")
+    nav_mode = st.sidebar.radio("View Mode", ["Single Tool View", "Hierarchical Roll-up"])
+
+    st.sidebar.markdown("### Hierarchy Filters")
+    projects = ["All"] + sorted(df_all['project_id'].astype(str).unique().tolist())
+    sel_proj = st.sidebar.selectbox("Project", projects)
+    df_proj = df_all if sel_proj == "All" else df_all[df_all['project_id'].astype(str) == sel_proj]
+    
+    components = ["All"] + sorted(df_proj['component_id'].astype(str).unique().tolist())
+    sel_comp = st.sidebar.selectbox("Component", components)
+    df_comp = df_proj if sel_comp == "All" else df_proj[df_proj['component_id'].astype(str) == sel_comp]
+    
+    parts = ["All"] + sorted(df_comp['part_id'].astype(str).unique().tolist())
+    sel_part = st.sidebar.selectbox("Part", parts)
+    df_part = df_comp if sel_part == "All" else df_comp[df_comp['part_id'].astype(str) == sel_part]
+
+    tool_ids = sorted(df_part['tool_id'].astype(str).unique().tolist())
+    
+    if not tool_ids:
+        st.sidebar.warning("No tools found for this selection.")
+        st.stop()
+
+    if nav_mode == "Single Tool View":
+        selected_tools = [st.sidebar.selectbox("Select Tool ID", tool_ids)]
+        tool_name_display = selected_tools[0]
+    else:
+        selected_tools = st.sidebar.multiselect("Select Tools (Roll-up)", tool_ids, default=tool_ids)
+        if not selected_tools:
+            st.sidebar.warning("Select at least one tool.")
+            st.stop()
+        tool_name_display = f"Roll-up ({len(selected_tools)} tools)"
+
+    with st.sidebar.expander("Configure Metrics"):
+        tolerance = st.slider("Tolerance Band", 0.01, 0.50, 0.05, 0.01)
+        downtime_gap_tolerance = st.slider("Downtime Gap (sec)", 0.0, 5.0, 2.0, 0.5)
+        run_interval_hours = st.slider("Run Interval (hours)", 1, 24, 8, 1)
+    
+    with st.sidebar.expander("Capacity Settings"):
+        target_output_perc = st.slider("Target Output %", 50, 100, 90)
+        default_cavities = st.number_input("Default Cavities", 1)
+        remove_maint = st.checkbox("Remove Maintenance", False)
+
+    config = {'target_output_perc': target_output_perc, 'tolerance': tolerance, 
+              'downtime_gap_tolerance': downtime_gap_tolerance, 'run_interval_hours': run_interval_hours, 
+              'default_cavities': default_cavities, 'remove_maintenance': remove_maint}
+    
+    df_tool = df_part[df_part['tool_id'].astype(str).isin(selected_tools)]
+
+    # --- TABS ---
+    t_risk, t_opt, t_tgt, t_trend, t_fc = st.tabs(["Risk Tower", "Capacity (Optimal)", "Capacity (Target)", "Trends", "Forecast [Draft]"])
+    
+    with t_risk: render_risk_tower(df_part, config)
+    with t_opt: render_dashboard(df_tool, tool_name_display, config, "Optimal") if not df_tool.empty else st.warning("No data.")
+    with t_tgt: render_dashboard(df_tool, tool_name_display, config, "Target") if not df_tool.empty else st.warning("No data.")
+    with t_trend: render_trends_tab(df_tool, config) if not df_tool.empty else st.warning("No data.")
+    with t_fc: render_forecast_tab(df_tool, config) if not df_tool.empty else st.warning("No data.")
+
+if __name__ == "__main__":
+    main()
