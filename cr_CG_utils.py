@@ -428,20 +428,16 @@ def get_aggregated_data(df, freq_mode, config):
     return pd.DataFrame(rows)
 
 def generate_po_periodic_data(df_bar_view, po_record, freq_mode, config, working_days_per_week, working_hours_per_day):
-    """Generates periodic aggregated data mapped against Estimated PO Demand and Available Capacity."""
-    agg_df = get_aggregated_data(df_bar_view, freq_mode, config)
-    if agg_df.empty: return agg_df
-    
+    """Generates periodic aggregated data spanning the full PO timeline."""
     start_date = po_record.get('start_date')
-    if pd.isna(start_date): start_date = df_bar_view['shot_time'].min()
     due_date = po_record.get('due_date')
-    if pd.isna(due_date): due_date = df_bar_view['shot_time'].max()
+    if pd.isna(start_date) or pd.isna(due_date): return pd.DataFrame()
     
     start_date = pd.to_datetime(start_date)
     due_date = pd.to_datetime(due_date)
     total_qty = po_record.get('total_qty', 0)
     
-    # Calculate demand spread
+    # Calculate uniform demand spread
     total_calendar_days = (due_date - start_date).days
     if total_calendar_days <= 0: total_calendar_days = 1
     
@@ -452,56 +448,98 @@ def generate_po_periodic_data(df_bar_view, po_record, freq_mode, config, working
     weekly_demand = daily_demand * working_days_per_week
     monthly_demand = weekly_demand * 4.33
     
-    if freq_mode == 'Daily':
-        agg_df['Estimated Demand'] = daily_demand
-    elif freq_mode == 'Weekly':
-        agg_df['Estimated Demand'] = weekly_demand
-    elif freq_mode == 'Monthly':
-        agg_df['Estimated Demand'] = monthly_demand
-    else:
-        agg_df['Estimated Demand'] = 0
-        
     # Calculate Configured Max Capacity based on optimal cycle times
-    avg_ct = df_bar_view['approved_ct'].mean() if 'approved_ct' in df_bar_view.columns else 1
+    avg_ct = df_bar_view['approved_ct'].mean() if (not df_bar_view.empty and 'approved_ct' in df_bar_view.columns) else 1
     if pd.isna(avg_ct) or avg_ct <= 0: avg_ct = 1
-    cav = df_bar_view['working_cavities'].max() if 'working_cavities' in df_bar_view.columns else 1
+    cav = df_bar_view['working_cavities'].max() if (not df_bar_view.empty and 'working_cavities' in df_bar_view.columns) else 1
     
     hourly_cap = (3600 / avg_ct) * cav
+    
+    # Process Actuals Data
+    agg_df = get_aggregated_data(df_bar_view, freq_mode, config)
+    
+    # Calculate timeline bounds to match the Burn-Up chart scope (Start -> Due or Late Finish)
+    current_cum = agg_df['Actual Output'].sum() if not agg_df.empty else 0
+    last_actual_date = pd.to_datetime(df_bar_view['shot_time'].max()).date() if not df_bar_view.empty else start_date.date()
+    
+    days_elapsed = (last_actual_date - start_date.date()).days + 1
+    if days_elapsed <= 0: days_elapsed = 1
+    avg_daily_rate = current_cum / days_elapsed
+    
+    remaining_qty = total_qty - current_cum
+    max_proj_days = 0
+    if remaining_qty > 0 and avg_daily_rate > 0:
+        max_proj_days = int(remaining_qty / avg_daily_rate) + 1
+        max_proj_days = min(max_proj_days, 365) # cap prediction limits
+        
+    projected_end_date = last_actual_date + timedelta(days=max_proj_days)
+    end_timeline_date = max(due_date.date(), projected_end_date)
+    
+    # Generate continuous empty timeline
     if freq_mode == 'Daily':
-        agg_df['Configured Max Capacity'] = hourly_cap * working_hours_per_day
+        full_periods = pd.date_range(start=start_date.date(), end=end_timeline_date, freq='D').date
+        df_full = pd.DataFrame({'Period': full_periods})
+        df_full['Estimated Demand'] = daily_demand
+        df_full['Configured Max Capacity'] = hourly_cap * working_hours_per_day
+        if not agg_df.empty: agg_df['Period'] = pd.to_datetime(agg_df['Period']).dt.date
     elif freq_mode == 'Weekly':
-        agg_df['Configured Max Capacity'] = hourly_cap * working_hours_per_day * working_days_per_week
+        full_periods = pd.period_range(start=start_date, end=end_timeline_date, freq='W').astype(str)
+        df_full = pd.DataFrame({'Period': full_periods})
+        df_full['Estimated Demand'] = weekly_demand
+        df_full['Configured Max Capacity'] = hourly_cap * working_hours_per_day * working_days_per_week
     elif freq_mode == 'Monthly':
-        agg_df['Configured Max Capacity'] = hourly_cap * working_hours_per_day * working_days_per_week * 4.33
+        full_periods = pd.period_range(start=start_date, end=end_timeline_date, freq='M').astype(str)
+        df_full = pd.DataFrame({'Period': full_periods})
+        df_full['Estimated Demand'] = monthly_demand
+        df_full['Configured Max Capacity'] = hourly_cap * working_hours_per_day * working_days_per_week * 4.33
     else:
-        agg_df['Configured Max Capacity'] = 0
+        df_full = pd.DataFrame()
+
+    # Merge full timeline with available actuals, filling gaps with zero
+    if not df_full.empty:
+        df_full['Period'] = df_full['Period'].astype(str)
+        if not agg_df.empty:
+            agg_df['Period'] = agg_df['Period'].astype(str)
+            final_df = pd.merge(df_full, agg_df[['Period', 'Actual Output']], on='Period', how='left')
+            final_df['Actual Output'] = final_df['Actual Output'].fillna(0)
+        else:
+            final_df = df_full
+            final_df['Actual Output'] = 0
+        return final_df
         
     return agg_df
 
 def generate_po_prediction_data(df_po_shots, po_record, config):
     """Generates time-series data specifically for PO Burn-up charting."""
-    if df_po_shots.empty or pd.isna(po_record.get('start_date')) or pd.isna(po_record.get('due_date')):
+    if pd.isna(po_record.get('start_date')) or pd.isna(po_record.get('due_date')):
         return None
         
     start_date = po_record['start_date'].date() if isinstance(po_record['start_date'], pd.Timestamp) else pd.to_datetime(po_record['start_date']).date()
     due_date = po_record['due_date'].date() if isinstance(po_record['due_date'], pd.Timestamp) else pd.to_datetime(po_record['due_date']).date()
-    total_qty = po_record['total_qty']
+    total_qty = po_record.get('total_qty', 0)
 
-    # Get daily aggregations for actuals
-    agg_daily = get_aggregated_data(df_po_shots, 'Daily', config)
-    if agg_daily.empty:
-        return None
-        
-    agg_daily['Period'] = pd.to_datetime(agg_daily['Period']).dt.date
-    agg_daily = agg_daily.sort_values('Period')
-    agg_daily['Cumulative Actual'] = agg_daily['Actual Output'].cumsum()
-    
     # Target Burnup Line (Ideal linear progress)
     total_days = (due_date - start_date).days
     if total_days <= 0: total_days = 1
     
     target_dates = [start_date + timedelta(days=i) for i in range(total_days + 1)]
     target_vals = [(total_qty / total_days) * i for i in range(total_days + 1)]
+
+    # Get daily aggregations for actuals
+    agg_daily = get_aggregated_data(df_po_shots, 'Daily', config) if not df_po_shots.empty else pd.DataFrame()
+    
+    if agg_daily.empty:
+        return {
+            'target_dates': target_dates, 'target_vals': target_vals,
+            'actual_dates': [], 'actual_cum': [],
+            'forecast_dates': [], 'forecast_avg': [], 'forecast_opt': [],
+            'due_date': due_date, 'start_date': start_date, 'total_qty': total_qty,
+            'current_cum': 0, 'avg_daily_rate': 0, 'opt_daily_rate': 0
+        }
+        
+    agg_daily['Period'] = pd.to_datetime(agg_daily['Period']).dt.date
+    agg_daily = agg_daily.sort_values('Period')
+    agg_daily['Cumulative Actual'] = agg_daily['Actual Output'].cumsum()
     
     last_actual_date = agg_daily['Period'].max()
     current_cum = agg_daily['Cumulative Actual'].max()
@@ -525,24 +563,19 @@ def generate_po_prediction_data(df_po_shots, po_record, config):
             
         max_proj_days = max(days_to_finish_avg, days_to_finish_opt, (due_date - last_actual_date).days)
         max_proj_days = min(max_proj_days, 365) # cap projection at 1 year max
+    else:
+        max_proj_days = max(0, (due_date - last_actual_date).days)
     
     forecast_dates = [last_actual_date + timedelta(days=i) for i in range(max_proj_days + 1)]
     forecast_avg = [current_cum + (avg_daily_rate * i) for i in range(max_proj_days + 1)]
     forecast_opt = [current_cum + (opt_daily_rate * i) for i in range(max_proj_days + 1)]
 
     return {
-        'target_dates': target_dates,
-        'target_vals': target_vals,
-        'actual_dates': agg_daily['Period'],
-        'actual_cum': agg_daily['Cumulative Actual'],
-        'forecast_dates': forecast_dates,
-        'forecast_avg': forecast_avg,
-        'forecast_opt': forecast_opt,
-        'due_date': due_date,
-        'total_qty': total_qty,
-        'current_cum': current_cum,
-        'avg_daily_rate': avg_daily_rate,
-        'opt_daily_rate': opt_daily_rate
+        'target_dates': target_dates, 'target_vals': target_vals,
+        'actual_dates': agg_daily['Period'].tolist(), 'actual_cum': agg_daily['Cumulative Actual'].tolist(),
+        'forecast_dates': forecast_dates, 'forecast_avg': forecast_avg, 'forecast_opt': forecast_opt,
+        'due_date': due_date, 'start_date': start_date, 'total_qty': total_qty,
+        'current_cum': current_cum, 'avg_daily_rate': avg_daily_rate, 'opt_daily_rate': opt_daily_rate
     }
 
 def generate_prediction_data(df_daily_agg, start_date, target_date, demand_target_total=None):
@@ -842,20 +875,22 @@ def plot_po_burnup(pred_data):
     fig = go.Figure()
     
     # Target Burnup (Grey Dashed)
-    fig.add_trace(go.Scatter(x=pred_data['target_dates'], y=pred_data['target_vals'], 
-                             mode='lines', name='PO Target Burn-up', line=dict(color='grey', dash='dash')))
+    if pred_data['target_dates']:
+        fig.add_trace(go.Scatter(x=pred_data['target_dates'], y=pred_data['target_vals'], 
+                                 mode='lines', name='PO Target Burn-up', line=dict(color='grey', dash='dash')))
                              
     # Actual Cumulative (Blue Line)
-    fig.add_trace(go.Scatter(x=pred_data['actual_dates'], y=pred_data['actual_cum'], 
-                             mode='lines+markers', name='Actual Accumulated', line=dict(color=PASTEL_COLORS['blue'], width=3)))
+    if pred_data['actual_dates']:
+        fig.add_trace(go.Scatter(x=pred_data['actual_dates'], y=pred_data['actual_cum'], 
+                                 mode='lines+markers', name='Actual Accumulated', line=dict(color=PASTEL_COLORS['blue'], width=3)))
                              
     # Forecast Avg (Orange Dot)
-    if pred_data['avg_daily_rate'] > 0:
+    if pred_data['avg_daily_rate'] > 0 and pred_data['forecast_dates']:
         fig.add_trace(go.Scatter(x=pred_data['forecast_dates'], y=pred_data['forecast_avg'], 
                                  mode='lines', name=f"Forecast (Avg: {pred_data['avg_daily_rate']:.0f}/d)", line=dict(color=PASTEL_COLORS['orange'], dash='dot')))
                              
     # Forecast Opt (Green Dot)
-    if pred_data['opt_daily_rate'] > 0:
+    if pred_data['opt_daily_rate'] > 0 and pred_data['forecast_dates']:
         fig.add_trace(go.Scatter(x=pred_data['forecast_dates'], y=pred_data['forecast_opt'], 
                                  mode='lines', name=f"Forecast (Opt: {pred_data['opt_daily_rate']:.0f}/d)", line=dict(color=PASTEL_COLORS['green'], dash='dot')))
                              
@@ -864,7 +899,20 @@ def plot_po_burnup(pred_data):
     fig.add_vline(x=due_ts, line_width=2, line_dash="dash", line_color="red", annotation_text="PO Due Date")
     fig.add_hline(y=pred_data['total_qty'], line_width=2, line_dash="solid", line_color="purple", annotation_text="PO Total Qty")
     
-    fig.update_layout(title="PO Target Burn-up vs Reality", hovermode="x unified", height=500, yaxis_title="Accumulated Parts Output", xaxis_title="Date")
+    # Force the X-axis bounds to represent the exact same context duration as the periodic chart
+    start_dt = pd.to_datetime(pred_data['start_date'])
+    max_dt_target = pd.to_datetime(pred_data['target_dates'][-1]) if pred_data['target_dates'] else start_dt
+    max_dt_forecast = pd.to_datetime(pred_data['forecast_dates'][-1]) if pred_data['forecast_dates'] else max_dt_target
+    end_dt = max(max_dt_target, max_dt_forecast)
+
+    fig.update_layout(
+        title="PO Target Burn-up vs Reality", 
+        hovermode="x unified", 
+        height=500, 
+        yaxis_title="Accumulated Parts Output", 
+        xaxis_title="Date",
+        xaxis_range=[start_dt, end_dt] 
+    )
     return fig
 
 def create_time_breakdown_donut(total_sec, prod_sec, down_sec):
