@@ -46,10 +46,13 @@ with st.sidebar.expander("🔍 2. Analysis Hierarchy", expanded=True):
     sel_proj = st.selectbox("Project", projs)
     if sel_proj != "All Projects": f_df = f_df[f_df['project'] == sel_proj]
     
-    # Component Filter
-    comps = ["All Components"] + sorted(f_df['component_id'].dropna().unique().tolist()) if 'component_id' in f_df.columns else ["N/A"]
-    sel_comp = st.selectbox("Component", comps)
-    if sel_comp != "All Components": f_df = f_df[f_df['component_id'] == sel_comp]
+    # Component Filter (Safeguarded against KeyError)
+    if 'component_id' in f_df.columns:
+        comps = ["All Components"] + sorted(f_df['component_id'].dropna().unique().tolist())
+        sel_comp = st.selectbox("Component", comps)
+        if sel_comp != "All Components": f_df = f_df[f_df['component_id'] == sel_comp]
+    else:
+        st.caption("No Component data found in source.")
 
     # Part & Tool Filter
     parts = ["All Parts"] + sorted(f_df['part_id'].dropna().unique().tolist())
@@ -90,7 +93,7 @@ if not scope_df.empty:
 # --- MAIN UI ---
 # ==============================================================================
 st.title(f"📊 {sel_po if sel_po != 'All POs' else 'Global Overview'}")
-st.markdown(f"**Hierarchy:** {sel_proj} > {sel_comp} > {sel_part}")
+st.markdown(f"**Hierarchy:** {sel_proj} > {sel_part}")
 
 t_physics, t_supply, t_risk = st.tabs(["🛠️ Asset Health", "📈 Supply Assurance", "🗼 Tower Breakdown"])
 
@@ -100,7 +103,10 @@ with t_physics:
     eff = (res['normal_shots'] / res['total_shots'] * 100) if res['total_shots'] > 0 else 0
     c1.plotly_chart(utils.create_modern_gauge(eff, "Process Efficiency"), use_container_width=True, key="p_eff")
     c2.plotly_chart(utils.create_modern_gauge(res['stability_index'], "Stability Index"), use_container_width=True, key="p_stab")
-    c3.plotly_chart(utils.create_time_donut(res['total_runtime_sec'], res['actual_output'] * scope_df['approved_ct'].mean(), res['downtime_sec']), use_container_width=True)
+    
+    # Handle potentially missing approved_ct for display
+    avg_app_ct = scope_df['approved_ct'].mean() if 'approved_ct' in scope_df.columns else scope_df['actual_ct'].mean()
+    c3.plotly_chart(utils.create_time_donut(res['total_runtime_sec'], res['actual_output'] * avg_app_ct, res['downtime_sec']), use_container_width=True)
 
     st.markdown("---")
     cw, ci = st.columns([2, 1])
@@ -132,5 +138,9 @@ with t_risk:
     drill = "part_id" if sel_part == "All Parts" else "tool_id"
     if sel_proj == "All Projects": drill = "project"
     
-    tower_df = scope_df.groupby(drill).agg({'shot_time': 'count', 'actual_ct': 'mean', 'working_cavities': 'mean'}).reset_index()
+    # Defensive aggregation to handle missing columns
+    agg_map = {'shot_time': 'count', 'actual_ct': 'mean'}
+    if 'working_cavities' in scope_df.columns: agg_map['working_cavities'] = 'mean'
+    
+    tower_df = scope_df.groupby(drill).agg(agg_map).reset_index()
     st.dataframe(tower_df, use_container_width=True, hide_index=True)
