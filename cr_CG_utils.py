@@ -42,17 +42,15 @@ def format_seconds_to_dhm(total_seconds):
     return " ".join(parts) if parts else "0m"
 
 def load_production_data(files):
-    """Loads and standardizes production shot data with hierarchical support."""
+    """Identical to load_all_data_cr but ensures hierarchy columns are mapped."""
     df_list = []
     for file in files:
         try:
-            # Read file based on extension
             if file.name.endswith(('.xls', '.xlsx')):
                 df = pd.read_excel(file)
             else:
                 df = pd.read_csv(file)
             
-            # Clean column names
             col_map = {col.strip().upper(): col for col in df.columns}
             
             def get_col(target_list):
@@ -60,7 +58,6 @@ def load_production_data(files):
                     if t in col_map: return col_map[t]
                 return None
 
-            # Standardized Mapping including Hierarchy
             mapping = {
                 "tool_id": ["TOOLING ID", "EQUIPMENT CODE", "TOOL_ID", "TOOL"],
                 "shot_time": ["SHOT TIME", "TIMESTAMP", "DATE", "TIME"],
@@ -77,7 +74,6 @@ def load_production_data(files):
                 if actual_col:
                     df.rename(columns={actual_col: key}, inplace=True)
 
-            # Essential validation
             if "shot_time" in df.columns and "actual_ct" in df.columns:
                 df["shot_time"] = pd.to_datetime(df["shot_time"], errors="coerce")
                 df["actual_ct"] = pd.to_numeric(df["actual_ct"], errors="coerce")
@@ -89,7 +85,7 @@ def load_production_data(files):
     return pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
 
 # ==============================================================================
-# --- CORE CALCULATION ENGINE ---
+# --- CORE CALCULATION ENGINE (IDENTICAL TO ORIGINAL) ---
 # ==============================================================================
 
 class CapacityRiskCalculator:
@@ -107,23 +103,19 @@ class CapacityRiskCalculator:
         df = self.df_raw.copy()
         if df.empty: return {}
 
-        # Set defaults for missing columns
         if 'approved_ct' not in df.columns: df['approved_ct'] = df['actual_ct'].median() 
         if 'working_cavities' not in df.columns: df['working_cavities'] = self.default_cavities
         
-        # Sort and identify runs
         df = df.sort_values("shot_time").reset_index(drop=True)
         df['time_diff_sec'] = df['shot_time'].diff().dt.total_seconds().fillna(0)
         is_new_run = df['time_diff_sec'] > (self.run_interval_hours * 3600)
         df['run_id'] = is_new_run.cumsum()
 
-        # Physics: Natural Mode Detection
         run_modes = df.groupby('run_id')['actual_ct'].apply(lambda x: x.mode().iloc[0] if not x.mode().empty else x.mean())
         df['mode_ct'] = df['run_id'].map(run_modes)
         df['mode_lower'] = df['mode_ct'] * (1 - self.tolerance)
         df['mode_upper'] = df['mode_ct'] * (1 + self.tolerance)
         
-        # Stop Identification
         df['next_shot_diff'] = df['time_diff_sec'].shift(-1).fillna(0)
         is_gap = df['next_shot_diff'] > (df['actual_ct'] + self.downtime_gap_tolerance)
         is_abnormal = (df['actual_ct'] < df['mode_lower']) | (df['actual_ct'] > df['mode_upper'])
@@ -131,7 +123,6 @@ class CapacityRiskCalculator:
         df['stop_flag'] = np.where(is_gap | is_abnormal, 1, 0)
         df.loc[is_new_run, 'stop_flag'] = 0 
         
-        # Volumetric Math
         prod_df = df[df['stop_flag'] == 0].copy()
         actual_output = prod_df['working_cavities'].sum()
 
@@ -140,7 +131,6 @@ class CapacityRiskCalculator:
             if not run.empty:
                 total_runtime_sec += (run['shot_time'].max() - run['shot_time'].min()).total_seconds() + run.iloc[-1]['actual_ct']
 
-        # Waterfall / OEE components
         downtime_sec = total_runtime_sec - prod_df['actual_ct'].sum()
         avg_app_ct = df['approved_ct'].mean()
         avg_cav = df['working_cavities'].mean()
@@ -148,7 +138,6 @@ class CapacityRiskCalculator:
         optimal_output = (total_runtime_sec / avg_app_ct) * avg_cav if avg_app_ct > 0 else 0
         loss_downtime = (downtime_sec / avg_app_ct) * avg_cav if avg_app_ct > 0 else 0
         
-        # Stability Metrics
         stops = df[df['stop_flag'] == 1]
         num_stops = len(stops)
         mtbf_min = (total_runtime_sec / 60 / num_stops) if num_stops > 0 else (total_runtime_sec / 60)
@@ -172,11 +161,11 @@ class CapacityRiskCalculator:
         }
 
 # ==============================================================================
-# --- RENDERING & VISUALIZATION ---
+# --- RENDERING & VISUALIZATION (IDENTICAL TO ORIGINAL) ---
 # ==============================================================================
 
 def render_dashboard(df, selected_name, config, mode="Optimal"):
-    """Identical rendering logic to original app."""
+    """Original rendering logic."""
     import streamlit as st
     calc = CapacityRiskCalculator(df, **config)
     res = calc.results
@@ -184,25 +173,22 @@ def render_dashboard(df, selected_name, config, mode="Optimal"):
 
     st.subheader(f"Physics Analysis: {selected_name} ({mode} Basis)")
 
-    # KPI Metrics
     c1, c2, c3, c4 = st.columns(4)
     with c1: st.metric("Stability Index", f"{res['stability_index']:.1f}%")
     with c2: st.metric("Actual Output", f"{res['actual_output_parts']:,.0f}")
     with c3: st.metric("MTBF", f"{res['mtbf_min']:.1f}m")
-    with c4: st.metric("MTTR", f"{res['mttr_min']:.1f}m")
+    with k4 := c4: st.metric("MTTR", f"{res['mttr_min']:.1f}m")
 
-    # Gauges Row
     st.markdown("---")
     g1, g2, g3 = st.columns(3)
     with g1:
         eff = (res['normal_shots'] / res['total_shots'] * 100) if res['total_shots'] > 0 else 0
-        st.plotly_chart(create_gauge(eff, "Process Efficiency", PASTEL_COLORS['blue']), use_container_width=True)
+        st.plotly_chart(create_gauge(eff, "Process Efficiency", PASTEL_COLORS['blue']), use_container_width=True, key=f"{selected_name}_{mode}_eff")
     with g2:
-        st.plotly_chart(create_gauge(res['stability_index'], "Availability", PASTEL_COLORS['green']), use_container_width=True)
+        st.plotly_chart(create_gauge(res['stability_index'], "Availability", PASTEL_COLORS['green']), use_container_width=True, key=f"{selected_name}_{mode}_stab")
     with g3:
-        st.plotly_chart(create_time_donut(res, selected_name), use_container_width=True)
+        st.plotly_chart(create_time_donut(res, selected_name), use_container_width=True, key=f"{selected_name}_{mode}_donut")
 
-    # Capacity Bridge
     st.markdown("---")
     bridge_res = res.copy()
     if mode == "Target":
@@ -212,14 +198,13 @@ def render_dashboard(df, selected_name, config, mode="Optimal"):
         bridge_res['loss_speed'] = max(0, (bridge_res['optimal_output'] - bridge_res['loss_downtime']) - bridge_res['actual_output_parts'])
         bridge_res['gain_speed'] = max(0, bridge_res['actual_output_parts'] - (bridge_res['optimal_output'] - bridge_res['loss_downtime']))
 
-    st.plotly_chart(create_waterfall_bridge(bridge_res, selected_name, mode), use_container_width=True)
+    st.plotly_chart(create_waterfall_bridge(bridge_res, selected_name, mode), use_container_width=True, key=f"{selected_name}_{mode}_waterfall")
 
-    # Shot Deep Dive
     with st.expander("Shot-by-Shot Cycle Analysis"):
-        st.plotly_chart(plot_shot_analysis(res['processed_df'], selected_name, config), use_container_width=True)
+        st.plotly_chart(plot_shot_analysis(res['processed_df'], selected_name, config), use_container_width=True, key=f"{selected_name}_{mode}_shots")
 
 def render_risk_tower(df_all, config):
-    """Identical Risk Tower logic to original app."""
+    """Original Risk Tower logic."""
     import streamlit as st
     st.subheader("Global Asset Physics Risk Tower")
     tower_data = []
