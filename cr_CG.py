@@ -914,18 +914,32 @@ def main():
     st.sidebar.markdown("### Navigation Mode")
     nav_mode = st.sidebar.radio("View Mode", ["Single Tool View", "Hierarchical Roll-up"])
 
-    st.sidebar.markdown("### Hierarchy Filters")
-    projects = ["All"] + sorted(df_all['project_id'].astype(str).unique().tolist())
-    sel_proj = st.sidebar.selectbox("Project", projects)
-    df_proj = df_all if sel_proj == "All" else df_all[df_all['project_id'].astype(str) == sel_proj]
-    
-    components = ["All"] + sorted(df_proj['component_id'].astype(str).unique().tolist())
-    sel_comp = st.sidebar.selectbox("Component", components)
-    df_comp = df_proj if sel_comp == "All" else df_proj[df_proj['component_id'].astype(str) == sel_comp]
-    
-    parts = ["All"] + sorted(df_comp['part_id'].astype(str).unique().tolist())
-    sel_part = st.sidebar.selectbox("Part", parts)
-    df_part = df_comp if sel_part == "All" else df_comp[df_comp['part_id'].astype(str) == sel_part]
+    # Detect if data actually contains hierarchical columns
+    has_hierarchy = False
+    for col in ['project_id', 'component_id', 'part_id']:
+        if col in df_all.columns:
+            # Check if there's any data besides "Unknown" or standard NaNs
+            uniques = [u for u in df_all[col].astype(str).unique() if str(u).lower() not in ["unknown", "nan", "none"]]
+            if len(uniques) > 0:
+                has_hierarchy = True
+                break
+
+    if has_hierarchy:
+        st.sidebar.markdown("### Hierarchy Filters")
+        projects = ["All"] + sorted(df_all['project_id'].astype(str).unique().tolist())
+        sel_proj = st.sidebar.selectbox("Project", projects)
+        df_proj = df_all if sel_proj == "All" else df_all[df_all['project_id'].astype(str) == sel_proj]
+        
+        components = ["All"] + sorted(df_proj['component_id'].astype(str).unique().tolist())
+        sel_comp = st.sidebar.selectbox("Component", components)
+        df_comp = df_proj if sel_comp == "All" else df_proj[df_proj['component_id'].astype(str) == sel_comp]
+        
+        parts = ["All"] + sorted(df_comp['part_id'].astype(str).unique().tolist())
+        sel_part = st.sidebar.selectbox("Part", parts)
+        df_part = df_comp if sel_part == "All" else df_comp[df_comp['part_id'].astype(str) == sel_part]
+    else:
+        # Graceful fallback for original flat CSV format
+        df_part = df_all
 
     tool_ids = sorted(df_part['tool_id'].astype(str).unique().tolist())
     
