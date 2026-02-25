@@ -427,6 +427,57 @@ def get_aggregated_data(df, freq_mode, config):
         
     return pd.DataFrame(rows)
 
+def generate_po_periodic_data(df_bar_view, po_record, freq_mode, config, working_days_per_week, working_hours_per_day):
+    """Generates periodic aggregated data mapped against Estimated PO Demand and Available Capacity."""
+    agg_df = get_aggregated_data(df_bar_view, freq_mode, config)
+    if agg_df.empty: return agg_df
+    
+    start_date = po_record.get('start_date')
+    if pd.isna(start_date): start_date = df_bar_view['shot_time'].min()
+    due_date = po_record.get('due_date')
+    if pd.isna(due_date): due_date = df_bar_view['shot_time'].max()
+    
+    start_date = pd.to_datetime(start_date)
+    due_date = pd.to_datetime(due_date)
+    total_qty = po_record.get('total_qty', 0)
+    
+    # Calculate demand spread
+    total_calendar_days = (due_date - start_date).days
+    if total_calendar_days <= 0: total_calendar_days = 1
+    
+    total_weeks = total_calendar_days / 7.0
+    total_working_days = total_weeks * working_days_per_week
+    
+    daily_demand = total_qty / total_working_days if total_working_days > 0 else 0
+    weekly_demand = daily_demand * working_days_per_week
+    monthly_demand = weekly_demand * 4.33
+    
+    if freq_mode == 'Daily':
+        agg_df['Estimated Demand'] = daily_demand
+    elif freq_mode == 'Weekly':
+        agg_df['Estimated Demand'] = weekly_demand
+    elif freq_mode == 'Monthly':
+        agg_df['Estimated Demand'] = monthly_demand
+    else:
+        agg_df['Estimated Demand'] = 0
+        
+    # Calculate Configured Max Capacity based on optimal cycle times
+    avg_ct = df_bar_view['approved_ct'].mean() if 'approved_ct' in df_bar_view.columns else 1
+    if pd.isna(avg_ct) or avg_ct <= 0: avg_ct = 1
+    cav = df_bar_view['working_cavities'].max() if 'working_cavities' in df_bar_view.columns else 1
+    
+    hourly_cap = (3600 / avg_ct) * cav
+    if freq_mode == 'Daily':
+        agg_df['Configured Max Capacity'] = hourly_cap * working_hours_per_day
+    elif freq_mode == 'Weekly':
+        agg_df['Configured Max Capacity'] = hourly_cap * working_hours_per_day * working_days_per_week
+    elif freq_mode == 'Monthly':
+        agg_df['Configured Max Capacity'] = hourly_cap * working_hours_per_day * working_days_per_week * 4.33
+    else:
+        agg_df['Configured Max Capacity'] = 0
+        
+    return agg_df
+
 def generate_po_prediction_data(df_po_shots, po_record, config):
     """Generates time-series data specifically for PO Burn-up charting."""
     if df_po_shots.empty or pd.isna(po_record.get('start_date')) or pd.isna(po_record.get('due_date')):
@@ -757,6 +808,34 @@ def generate_mttr_mtbf_analysis(analysis_df):
 # --- PLOTTING FUNCTIONS ---
 # ==============================================================================
 
+def plot_po_periodic_chart(agg_po, bar_freq):
+    """Plots the periodic bar chart for PO tracking vs Demand & Configured Capacity."""
+    fig = go.Figure()
+    
+    fig.add_trace(go.Bar(
+        x=agg_po['Period'], y=agg_po['Actual Output'], 
+        name='Actual Output', marker_color=PASTEL_COLORS['blue']
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=agg_po['Period'], y=agg_po['Configured Max Capacity'], 
+        name='Configured Max Capacity', mode='lines+markers', 
+        line=dict(color=PASTEL_COLORS['green'], dash='dot', width=2)
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=agg_po['Period'], y=agg_po['Estimated Demand'], 
+        name='Estimated PO Demand', mode='lines+markers', 
+        line=dict(color=PASTEL_COLORS['red'], dash='dash', width=2)
+    ))
+    
+    fig.update_layout(
+        title=f"Periodic Production vs Demand ({bar_freq})",
+        barmode='group', hovermode="x unified", height=450,
+        yaxis_title="Parts Output", xaxis_title="Period"
+    )
+    return fig
+
 def plot_po_burnup(pred_data):
     """Plots the PO specific Burn-Up tracking chart."""
     if not pred_data: return go.Figure()
@@ -780,7 +859,7 @@ def plot_po_burnup(pred_data):
         fig.add_trace(go.Scatter(x=pred_data['forecast_dates'], y=pred_data['forecast_opt'], 
                                  mode='lines', name=f"Forecast (Opt: {pred_data['opt_daily_rate']:.0f}/d)", line=dict(color=PASTEL_COLORS['green'], dash='dot')))
                              
-    # Annotations
+    # Annotations - Fix applied using Unix Timestamp mapping for Plotly compatibility
     due_ts = pd.to_datetime(pred_data['due_date']).timestamp() * 1000
     fig.add_vline(x=due_ts, line_width=2, line_dash="dash", line_color="red", annotation_text="PO Due Date")
     fig.add_hline(y=pred_data['total_qty'], line_width=2, line_dash="solid", line_color="purple", annotation_text="PO Total Qty")
