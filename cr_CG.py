@@ -349,8 +349,8 @@ def render_forecast_tab(df_part, config, df_logistics, working_days_per_week, wo
                 finish_avg = last_act_date + timedelta(days=int(days_avg))
                 finish_opt = last_act_date + timedelta(days=int(days_opt))
                 
-                status_color = "#ff6961" if finish_avg.date() > due_date else "#77dd77"
-                status_text = "LATE - AT RISK" if finish_avg.date() > due_date else "ON TRACK"
+                status_color = "#ff6961" if finish_avg > due_date else "#77dd77"
+                status_text = "LATE - AT RISK" if finish_avg > due_date else "ON TRACK"
                 
                 analysis_html = f"""
                 <div style="background-color: #262730; padding: 15px; border-radius: 5px; border: 1px solid #41424C; margin-bottom: 20px;">
