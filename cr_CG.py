@@ -4,11 +4,11 @@ import numpy as np
 from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
-import cr_utils as cr_utils
+import cr_CG_utils as cr_CG_utils
 import importlib
 
 # Force reload of utils to ensure latest logic is used
-importlib.reload(cr_utils)
+importlib.reload(cr_CG_utils)
 
 # ==============================================================================
 # --- 🔒 SECURITY: Initial LOGIN ---
@@ -57,16 +57,16 @@ def create_capsule(value, color_logic="neutral", suffix="", inverse=False):
         bg_color = "#41424C" 
         text_color = "#ffffff"
     elif color_logic == "good_bad":
-        if value >= 90: bg_color = cr_utils.PASTEL_COLORS['green']; text_color = "#0E1117"
-        elif value >= 75: bg_color = cr_utils.PASTEL_COLORS['orange']; text_color = "#0E1117"
-        else: bg_color = cr_utils.PASTEL_COLORS['red']; text_color = "#0E1117"
+        if value >= 90: bg_color = cr_CG_utils.PASTEL_COLORS['green']; text_color = "#0E1117"
+        elif value >= 75: bg_color = cr_CG_utils.PASTEL_COLORS['orange']; text_color = "#0E1117"
+        else: bg_color = cr_CG_utils.PASTEL_COLORS['red']; text_color = "#0E1117"
     elif color_logic == "bad_good":
-        if value <= 10: bg_color = cr_utils.PASTEL_COLORS['green']; text_color = "#0E1117"
-        elif value <= 20: bg_color = cr_utils.PASTEL_COLORS['orange']; text_color = "#0E1117"
-        else: bg_color = cr_utils.PASTEL_COLORS['red']; text_color = "#0E1117"
+        if value <= 10: bg_color = cr_CG_utils.PASTEL_COLORS['green']; text_color = "#0E1117"
+        elif value <= 20: bg_color = cr_CG_utils.PASTEL_COLORS['orange']; text_color = "#0E1117"
+        else: bg_color = cr_CG_utils.PASTEL_COLORS['red']; text_color = "#0E1117"
     elif color_logic == "net":
-        if value >= 0: bg_color = cr_utils.PASTEL_COLORS['green']; text_color = "#0E1117"
-        else: bg_color = cr_utils.PASTEL_COLORS['red']; text_color = "#0E1117"
+        if value >= 0: bg_color = cr_CG_utils.PASTEL_COLORS['green']; text_color = "#0E1117"
+        else: bg_color = cr_CG_utils.PASTEL_COLORS['red']; text_color = "#0E1117"
 
     return f'<span style="background-color:{bg_color}; color:{text_color}; padding:2px 8px; border-radius:10px; font-weight:bold; font-size:0.8em;">{value:,.1f}{suffix}</span>'
 
@@ -110,7 +110,7 @@ def render_risk_tower(df_all_tools, config):
     for tool_id in tools:
         tool_df = df_all_tools[df_all_tools['tool_id'] == tool_id]
         
-        weekly_df = cr_utils.get_aggregated_data(tool_df, 'Weekly', config)
+        weekly_df = cr_CG_utils.get_aggregated_data(tool_df, 'Weekly', config)
         
         if weekly_df.empty:
             continue
@@ -171,9 +171,9 @@ def render_risk_tower(df_all_tools, config):
         score = row['Risk Score']
         styles = [''] * len(row)
         
-        if score >= 90: base_color = cr_utils.PASTEL_COLORS['green']
-        elif score >= 75: base_color = cr_utils.PASTEL_COLORS['orange']
-        else: base_color = cr_utils.PASTEL_COLORS['red']
+        if score >= 90: base_color = cr_CG_utils.PASTEL_COLORS['green']
+        elif score >= 75: base_color = cr_CG_utils.PASTEL_COLORS['orange']
+        else: base_color = cr_CG_utils.PASTEL_COLORS['red']
         
         return [f'background-color: {base_color}; color: black' for _ in row]
 
@@ -195,7 +195,7 @@ def render_trends_tab(df_tool, config):
     with col_mode:
         trend_mode = st.selectbox("Dashboard Mode", ["Optimal", "Target"], key="cr_trend_mode")
 
-    agg_df = cr_utils.get_aggregated_data(df_tool, trend_freq, config)
+    agg_df = cr_CG_utils.get_aggregated_data(df_tool, trend_freq, config)
     
     if agg_df.empty:
         st.warning("No trend data available.")
@@ -291,7 +291,7 @@ def render_forecast_tab(df_tool, config):
         - **Assumption:** It assumes your *future* run frequency (days per week) will be similar to the *historical* period you selected.
         """, unsafe_allow_html=True)
 
-    agg_daily = cr_utils.get_aggregated_data(df_tool, 'Daily', config)
+    agg_daily = cr_CG_utils.get_aggregated_data(df_tool, 'Daily', config)
     
     if agg_daily.empty:
         st.warning("Not enough daily data to generate a forecast.")
@@ -317,9 +317,9 @@ def render_forecast_tab(df_tool, config):
         return
 
     with c_chart:
-        pred = cr_utils.generate_prediction_data(agg_filtered, data_max, tgt_date, dem_goal)
+        pred = cr_CG_utils.generate_prediction_data(agg_filtered, data_max, tgt_date, dem_goal)
         
-        fig = cr_utils.plot_prediction_chart(pred, dem_goal)
+        fig = cr_CG_utils.plot_prediction_chart(pred, dem_goal)
         fig.update_layout(title="Future Capacity Projection")
         st.plotly_chart(fig, use_container_width=True, key="fc_chart")
         
@@ -345,7 +345,7 @@ def render_forecast_tab(df_tool, config):
             </div>
             """
         else:
-             analysis_html = cr_utils.generate_forecast_insights(pred, dem_goal)
+             analysis_html = cr_CG_utils.generate_forecast_insights(pred, dem_goal)
 
         st.markdown(analysis_html, unsafe_allow_html=True)
 
@@ -370,7 +370,7 @@ def render_dashboard(df_tool, tool_name, config, dashboard_mode="Optimal"):
 
     st.markdown("---")
 
-    base_calc = cr_utils.CapacityRiskCalculator(df_tool, **config)
+    base_calc = cr_CG_utils.CapacityRiskCalculator(df_tool, **config)
     df_processed = base_calc.results.get('processed_df', pd.DataFrame())
     
     if df_processed.empty: st.error("No data."); return
@@ -408,7 +408,7 @@ def render_dashboard(df_tool, tool_name, config, dashboard_mode="Optimal"):
     if df_view.empty: st.warning("No data found."); return
 
     # --- Calculations ---
-    run_breakdown_df = cr_utils.calculate_run_summaries(df_view, config)
+    run_breakdown_df = cr_CG_utils.calculate_run_summaries(df_view, config)
     if run_breakdown_df.empty: st.warning("No runs found."); return
 
     total_runtime = run_breakdown_df['total_runtime_sec'].sum()
@@ -456,7 +456,7 @@ def render_dashboard(df_tool, tool_name, config, dashboard_mode="Optimal"):
     with c_btn:
         st.download_button(
             label="📥 Export Capacity Report",
-            data=cr_utils.prepare_and_generate_capacity_excel(df_view, config),
+            data=cr_CG_utils.prepare_and_generate_capacity_excel(df_view, config),
             file_name=f"Capacity_Report_{datetime.now():%Y%m%d}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
@@ -468,7 +468,7 @@ def render_dashboard(df_tool, tool_name, config, dashboard_mode="Optimal"):
     # ==========================================================================
     
     st.plotly_chart(
-        cr_utils.create_time_breakdown_donut(
+        cr_CG_utils.create_time_breakdown_donut(
             res['total_runtime_sec'], 
             res['production_time_sec'], 
             res['downtime_sec']
@@ -481,7 +481,7 @@ def render_dashboard(df_tool, tool_name, config, dashboard_mode="Optimal"):
     with c_g1:
         with st.container(border=True):
              st.plotly_chart(
-                cr_utils.create_modern_gauge(res['efficiency_rate'], "Run Rate Efficiency"),
+                cr_CG_utils.create_modern_gauge(res['efficiency_rate'], "Run Rate Efficiency"),
                 use_container_width=True,
                 key=f"eff_gauge_{key_suffix}"
              )
@@ -493,21 +493,21 @@ def render_dashboard(df_tool, tool_name, config, dashboard_mode="Optimal"):
              
              st.markdown(f"""
              <div style='text-align: center; font-size: 12px; margin-top: 5px;'>
-                <span style='color:{cr_utils.PASTEL_COLORS['red']};'>● 0-50%</span> &nbsp;
-                <span style='color:{cr_utils.PASTEL_COLORS['orange']};'>● 50-70%</span> &nbsp;
-                <span style='color:{cr_utils.PASTEL_COLORS['green']};'>● 70-100%</span>
+                <span style='color:{cr_CG_utils.PASTEL_COLORS['red']};'>● 0-50%</span> &nbsp;
+                <span style='color:{cr_CG_utils.PASTEL_COLORS['orange']};'>● 50-70%</span> &nbsp;
+                <span style='color:{cr_CG_utils.PASTEL_COLORS['green']};'>● 70-100%</span>
              </div>
              """, unsafe_allow_html=True)
 
     with c_g2:
         with st.container(border=True):
              st.plotly_chart(
-                cr_utils.create_modern_gauge(res['stability_index'], "Run Rate Stability Index"),
+                cr_CG_utils.create_modern_gauge(res['stability_index'], "Run Rate Stability Index"),
                 use_container_width=True,
                 key=f"stab_gauge_{key_suffix}"
              )
-             prod_str = cr_utils.format_seconds_to_dhm(res['production_time_sec'])
-             total_str = cr_utils.format_seconds_to_dhm(res['total_runtime_sec'])
+             prod_str = cr_CG_utils.format_seconds_to_dhm(res['production_time_sec'])
+             total_str = cr_CG_utils.format_seconds_to_dhm(res['total_runtime_sec'])
              st.markdown(f"""
              <div style='text-align: center; font-size: 14px; color: #a0a0a0; margin-bottom: 10px;'>
                 {prod_str} / {total_str} (Production Time / Total Run Duration)
@@ -516,21 +516,21 @@ def render_dashboard(df_tool, tool_name, config, dashboard_mode="Optimal"):
              
              st.markdown(f"""
              <div style='text-align: center; font-size: 12px; margin-top: 5px;'>
-                <span style='color:{cr_utils.PASTEL_COLORS['red']};'>● 0-50%</span> &nbsp;
-                <span style='color:{cr_utils.PASTEL_COLORS['orange']};'>● 50-70%</span> &nbsp;
-                <span style='color:{cr_utils.PASTEL_COLORS['green']};'>● 70-100%</span>
+                <span style='color:{cr_CG_utils.PASTEL_COLORS['red']};'>● 0-50%</span> &nbsp;
+                <span style='color:{cr_CG_utils.PASTEL_COLORS['orange']};'>● 50-70%</span> &nbsp;
+                <span style='color:{cr_CG_utils.PASTEL_COLORS['green']};'>● 70-100%</span>
              </div>
              """, unsafe_allow_html=True)
     
     with st.container(border=True):
         st.plotly_chart(
-            cr_utils.create_stability_driver_bar(res['mtbf_min'], res['mttr_min'], res['stability_index']),
+            cr_CG_utils.create_stability_driver_bar(res['mtbf_min'], res['mttr_min'], res['stability_index']),
             use_container_width=True,
             key=f"stab_driver_{key_suffix}"
         )
         
         with st.expander("🔍 View Correlation Analysis"):
-            st.markdown(cr_utils.generate_mttr_mtbf_analysis(run_breakdown_df), unsafe_allow_html=True)
+            st.markdown(cr_CG_utils.generate_mttr_mtbf_analysis(run_breakdown_df), unsafe_allow_html=True)
 
     # ==========================================================================
     # --- NUMERIC METRICS (KPI Grid 3) ---
@@ -596,7 +596,7 @@ def render_dashboard(df_tool, tool_name, config, dashboard_mode="Optimal"):
     st.markdown("---")
 
     with st.expander("🤖 View Automated Analysis Summary", expanded=True):
-        insights = cr_utils.generate_capacity_insights(res, dashboard_mode)
+        insights = cr_CG_utils.generate_capacity_insights(res, dashboard_mode)
         st.markdown(f"""
         **Overall:** {insights['overall']}  
         **Drivers:** {insights['drivers']}  
@@ -617,9 +617,9 @@ def render_dashboard(df_tool, tool_name, config, dashboard_mode="Optimal"):
         d_df['Run Rate MTBF (min)'] = (d_df['production_time_sec'] / 60) / d_df['stop_events'].replace(0, 1)
         d_df.loc[d_df['stop_events'] == 0, 'Run Rate MTBF (min)'] = d_df['production_time_sec'] / 60
 
-        d_df["Total Run Duration"] = d_df['total_runtime_sec'].apply(cr_utils.format_seconds_to_dhm)
-        d_df["Production Time"] = d_df['production_time_sec'].apply(cr_utils.format_seconds_to_dhm)
-        d_df["Run Rate Downtime"] = d_df['downtime_sec'].apply(cr_utils.format_seconds_to_dhm)
+        d_df["Total Run Duration"] = d_df['total_runtime_sec'].apply(cr_CG_utils.format_seconds_to_dhm)
+        d_df["Production Time"] = d_df['production_time_sec'].apply(cr_CG_utils.format_seconds_to_dhm)
+        d_df["Run Rate Downtime"] = d_df['downtime_sec'].apply(cr_CG_utils.format_seconds_to_dhm)
         
         d_df = d_df.rename(columns={
             'tool_ids': 'Tool(s)',
@@ -688,14 +688,14 @@ def render_dashboard(df_tool, tool_name, config, dashboard_mode="Optimal"):
                 text=[f"{tgt_output:,.0f}", f"{abs(y_dt):,.0f}", f"{abs(y_slow):,.0f}", f"+{abs(y_fast):,.0f}", f"{act_output:,.0f}"],
                 textposition="outside",
                 connector={"line": {"color": "rgb(63, 63, 63)"}},
-                decreasing={"marker": {"color": cr_utils.PASTEL_COLORS['red']}},
-                increasing={"marker": {"color": cr_utils.PASTEL_COLORS['green']}},
-                totals={"marker": {"color": cr_utils.PASTEL_COLORS['blue']}}
+                decreasing={"marker": {"color": cr_CG_utils.PASTEL_COLORS['red']}},
+                increasing={"marker": {"color": cr_CG_utils.PASTEL_COLORS['green']}},
+                totals={"marker": {"color": cr_CG_utils.PASTEL_COLORS['blue']}}
              ))
              fig_wf.update_layout(title="Allocated Capacity Loss (Target -> Actual)", showlegend=False, height=450)
              st.plotly_chart(fig_wf, use_container_width=True, key=f"waterfall_chart_{key_suffix}")
         else:
-             st.plotly_chart(cr_utils.plot_waterfall(res, benchmark_mode), use_container_width=True, key=f"waterfall_chart_{key_suffix}")
+             st.plotly_chart(cr_CG_utils.plot_waterfall(res, benchmark_mode), use_container_width=True, key=f"waterfall_chart_{key_suffix}")
     
     with c_details:
         with st.container(border=True):
@@ -709,7 +709,7 @@ def render_dashboard(df_tool, tool_name, config, dashboard_mode="Optimal"):
                 color_hex = "#77dd77" if net_diff >= 0 else "#ff6961"
                 st.markdown(f"<h2 style='color:{color_hex}; margin:0;'>{net_diff:+,.0f} parts</h2>", unsafe_allow_html=True)
                 if dashboard_mode == "Optimal":
-                    st.caption(f"Net Time Lost: {cr_utils.format_seconds_to_dhm(res['total_capacity_loss_sec'])}")
+                    st.caption(f"Net Time Lost: {cr_CG_utils.format_seconds_to_dhm(res['total_capacity_loss_sec'])}")
         
         if is_allocated:
             net_loss_optimal = loss_downtime + (loss_slow - gain_fast)
@@ -776,10 +776,10 @@ def render_dashboard(df_tool, tool_name, config, dashboard_mode="Optimal"):
     chart_freq = st.selectbox("Chart Aggregation", ["Daily", "Weekly", "Run"], key=f"chart_agg_{key_suffix}")
     freq_map = {"Daily": "Daily", "Weekly": "Weekly", "Run": "by Run"}
     
-    agg_chart_df = cr_utils.get_aggregated_data(df_view, freq_map[chart_freq], config)
+    agg_chart_df = cr_CG_utils.get_aggregated_data(df_view, freq_map[chart_freq], config)
     if not agg_chart_df.empty:
         st.plotly_chart(
-            cr_utils.plot_performance_breakdown(agg_chart_df, 'Period', benchmark_mode), 
+            cr_CG_utils.plot_performance_breakdown(agg_chart_df, 'Period', benchmark_mode), 
             use_container_width=True,
             key=f"perf_breakdown_{key_suffix}"
         )
@@ -792,7 +792,7 @@ def render_dashboard(df_tool, tool_name, config, dashboard_mode="Optimal"):
         totals_df = agg_chart_df.copy()
         if 'Production Time Sec' in totals_df and 'Run Time Sec' in totals_df:
             totals_df['Actual Production Time'] = totals_df.apply(
-                lambda r: f"{cr_utils.format_seconds_to_dhm(r['Production Time Sec'])} ({r['Production Time Sec']/r['Run Time Sec']:.1%})" if r['Run Time Sec'] > 0 else "0m (0.0%)", 
+                lambda r: f"{cr_CG_utils.format_seconds_to_dhm(r['Production Time Sec'])} ({r['Production Time Sec']/r['Run Time Sec']:.1%})" if r['Run Time Sec'] > 0 else "0m (0.0%)", 
                 axis=1
             )
         else:
@@ -878,7 +878,7 @@ def render_dashboard(df_tool, tool_name, config, dashboard_mode="Optimal"):
     st.markdown("---")
 
     st.subheader("Shot Analysis")
-    st.plotly_chart(cr_utils.plot_shot_analysis(res['processed_df']), use_container_width=True, key=f"shot_analysis_{key_suffix}")
+    st.plotly_chart(cr_CG_utils.plot_shot_analysis(res['processed_df']), use_container_width=True, key=f"shot_analysis_{key_suffix}")
     
     with st.expander("View Shot Data Table", expanded=False):
             cols_to_show = ['tool_id', 'shot_time', 'actual_ct', 'adj_ct_sec', 'time_diff_sec', 'stop_flag', 'stop_event']
@@ -908,7 +908,7 @@ def main():
     files = st.sidebar.file_uploader("Upload Data (Excel/CSV)", accept_multiple_files=True, type=['xlsx', 'csv', 'xls'])
     if not files: st.info("👈 Upload files."); st.stop()
     
-    df_all = cr_utils.load_all_data_cr(files)
+    df_all = cr_CG_utils.load_all_data_cr(files)
     if df_all.empty: st.error("No valid data."); st.stop()
 
     st.sidebar.markdown("### Navigation Mode")
