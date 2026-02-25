@@ -781,8 +781,8 @@ def plot_po_burnup(pred_data):
                                  mode='lines', name=f"Forecast (Opt: {pred_data['opt_daily_rate']:.0f}/d)", line=dict(color=PASTEL_COLORS['green'], dash='dot')))
                              
     # Annotations
-    due_str = pred_data['due_date'].strftime('%Y-%m-%d')
-    fig.add_vline(x=due_str, line_width=2, line_dash="dash", line_color="red", annotation_text="PO Due Date")
+    due_ts = pd.to_datetime(pred_data['due_date']).timestamp() * 1000
+    fig.add_vline(x=due_ts, line_width=2, line_dash="dash", line_color="red", annotation_text="PO Due Date")
     fig.add_hline(y=pred_data['total_qty'], line_width=2, line_dash="solid", line_color="purple", annotation_text="PO Total Qty")
     
     fig.update_layout(title="PO Target Burn-up vs Reality", hovermode="x unified", height=500, yaxis_title="Accumulated Parts Output", xaxis_title="Date")
