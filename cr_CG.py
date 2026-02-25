@@ -260,7 +260,7 @@ def render_trends_tab(df_tool, config):
     else:
         st.warning(f"Metric {metric_to_plot} not found in data.")
 
-def render_forecast_tab(df_part, config, df_logistics):
+def render_forecast_tab(df_part, config, df_logistics, working_days_per_week, working_hours_per_day):
     """Renders the PO Forecast & Burn-up Tab for the entire Part/PO scope."""
     st.header("Purchase Order Tracking & Forecast")
     
@@ -268,8 +268,6 @@ def render_forecast_tab(df_part, config, df_logistics):
     has_po_in_shots = 'po_number' in df_part.columns and not df_part['po_number'].replace("Unknown", pd.NA).isna().all()
     
     if not df_logistics.empty and has_po_in_shots:
-        st.info("Tracking actual production against Purchase Order targets across all participating toolings.")
-        
         part_pos = df_part['po_number'].unique()
         avail_pos = df_logistics[df_logistics['po_number'].isin(part_pos)]['po_number'].unique()
         
@@ -277,17 +275,58 @@ def render_forecast_tab(df_part, config, df_logistics):
             st.warning("No matching POs found between Logistics Plan and Production Data for this Part.")
             return
             
-        selected_po = st.selectbox("Select Purchase Order", avail_pos)
+        selected_po = st.selectbox("Select Purchase Order to Track", avail_pos)
         po_record = df_logistics[df_logistics['po_number'] == selected_po].iloc[0]
         
         df_po_shots = df_part[df_part['po_number'] == selected_po].copy()
         
-        c1, c2, c3 = st.columns(3)
-        c1.metric("PO Total Quantity", f"{po_record['total_qty']:,.0f}")
-        c2.metric("PO Start Date", po_record['start_date'].strftime('%Y-%m-%d') if pd.notnull(po_record['start_date']) else "N/A")
-        c3.metric("PO Due Date", po_record['due_date'].strftime('%Y-%m-%d') if pd.notnull(po_record['due_date']) else "N/A")
+        # --- PO Summary Box ---
+        with st.container(border=True):
+            st.markdown("### 📋 Purchase Order Summary")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("PO Number", po_record['po_number'])
+            col2.metric("Project / Part", f"{po_record.get('project_id', 'N/A')} / {po_record.get('part_id', 'N/A')}")
+            col3.metric("Total Target Quantity", f"{po_record.get('total_qty', 0):,.0f}")
+            
+            # Identify tools involved
+            involved_tools = df_po_shots['tool_id'].unique()
+            tools_str = ", ".join([str(t) for t in involved_tools])
+            col4.metric("Assigned Toolings", tools_str)
+            
+            c1, c2 = st.columns(2)
+            start_dt = pd.to_datetime(po_record.get('start_date'))
+            due_dt = pd.to_datetime(po_record.get('due_date'))
+            c1.write(f"**Start Date:** {start_dt.strftime('%Y-%m-%d') if pd.notnull(start_dt) else 'N/A'}")
+            c2.write(f"**Due Date:** {due_dt.strftime('%Y-%m-%d') if pd.notnull(due_dt) else 'N/A'}")
+
+        st.markdown("---")
+
+        # --- GRAPH 1: Periodic Breakdown vs Demand ---
+        st.markdown("### 1. Periodic Production vs Estimated Demand")
+        col_freq, col_tool = st.columns([1, 2])
+        with col_freq:
+            bar_freq = st.selectbox("Select Frequency Spread", ["Weekly", "Monthly", "Daily"], index=0)
         
-        # --- Burn Up Chart ---
+        with col_tool:
+            if len(involved_tools) > 1:
+                options = ["All Tools Combined"] + list(involved_tools)
+                selected_tool_for_bar = st.radio("Select View Segment", options, horizontal=True)
+            else:
+                selected_tool_for_bar = "All Tools Combined"
+        
+        df_bar_view = df_po_shots if selected_tool_for_bar == "All Tools Combined" else df_po_shots[df_po_shots['tool_id'] == selected_tool_for_bar]
+        
+        agg_po = cr_CG_utils.generate_po_periodic_data(df_bar_view, po_record, bar_freq, config, working_days_per_week, working_hours_per_day)
+        
+        if not agg_po.empty:
+            st.plotly_chart(cr_CG_utils.plot_po_periodic_chart(agg_po, bar_freq), use_container_width=True)
+        else:
+            st.warning("No periodic data available.")
+
+        st.markdown("---")
+        
+        # --- GRAPH 2: Burn Up Chart ---
+        st.markdown("### 2. PO Target Burn-Up (All Assigned Tools)")
         pred_data = cr_CG_utils.generate_po_prediction_data(df_po_shots, po_record, config)
         if pred_data:
             st.plotly_chart(cr_CG_utils.plot_po_burnup(pred_data), use_container_width=True)
@@ -310,8 +349,8 @@ def render_forecast_tab(df_part, config, df_logistics):
                 finish_avg = last_act_date + timedelta(days=int(days_avg))
                 finish_opt = last_act_date + timedelta(days=int(days_opt))
                 
-                status_color = "#ff6961" if finish_avg > due_date else "#77dd77"
-                status_text = "LATE - AT RISK" if finish_avg > due_date else "ON TRACK"
+                status_color = "#ff6961" if finish_avg.date() > due_date else "#77dd77"
+                status_text = "LATE - AT RISK" if finish_avg.date() > due_date else "ON TRACK"
                 
                 analysis_html = f"""
                 <div style="background-color: #262730; padding: 15px; border-radius: 5px; border: 1px solid #41424C; margin-bottom: 20px;">
@@ -328,15 +367,8 @@ def render_forecast_tab(df_part, config, df_logistics):
         else:
             st.warning("Not enough production data to generate burn-up.")
             
-        # --- Configurable Bar Chart ---
-        st.markdown("### Periodic Breakdown")
-        bar_freq = st.selectbox("Select Bar Graph Frequency", ["Daily", "Weekly", "Monthly"], index=1)
-        agg_po = cr_CG_utils.get_aggregated_data(df_po_shots, bar_freq, config)
-        if not agg_po.empty:
-            st.plotly_chart(cr_CG_utils.plot_performance_breakdown(agg_po, 'Period', 'Optimal Output'), use_container_width=True)
-            
         # --- Breakdown per Tooling Table ---
-        st.markdown("### Breakdown per Tooling")
+        st.markdown("### Production Breakdown per Tooling")
         tool_summary = []
         for tool_id, tool_df in df_po_shots.groupby('tool_id'):
             calc = cr_CG_utils.CapacityRiskCalculator(tool_df, **config)
@@ -1037,6 +1069,10 @@ def main():
         tolerance = st.slider("Tolerance Band", 0.01, 0.50, 0.05, 0.01)
         downtime_gap_tolerance = st.slider("Downtime Gap (sec)", 0.0, 5.0, 2.0, 0.5)
         run_interval_hours = st.slider("Run Interval (hours)", 1, 24, 8, 1)
+        
+    with st.sidebar.expander("Logistics & Schedule Config"):
+        working_days_per_week = st.slider("Working Days per Week", 1, 7, 5)
+        working_hours_per_day = st.slider("Working Hours per Day", 1, 24, 24)
     
     with st.sidebar.expander("Capacity Settings"):
         target_output_perc = st.slider("Target Output %", 50, 100, 90)
@@ -1056,7 +1092,7 @@ def main():
     with t_opt: render_dashboard(df_tool, tool_name_display, config, "Optimal") if not df_tool.empty else st.warning("No data.")
     with t_tgt: render_dashboard(df_tool, tool_name_display, config, "Target") if not df_tool.empty else st.warning("No data.")
     with t_trend: render_trends_tab(df_tool, config) if not df_tool.empty else st.warning("No data.")
-    with t_fc: render_forecast_tab(df_part, config, df_logistics) if not df_part.empty else st.warning("No data.")
+    with t_fc: render_forecast_tab(df_part, config, df_logistics, working_days_per_week, working_hours_per_day) if not df_part.empty else st.warning("No data.")
 
 if __name__ == "__main__":
     main()
