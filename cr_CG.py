@@ -141,29 +141,29 @@ with t_assure:
     k4.metric("Tool Stress Factor", f"{stress_pct:.1f}%", delta=f"{stress_pct-100:.1f}% vs Plan", delta_color="inverse")
 
     st.markdown("---")
-    st.plotly_chart(utils.create_hybrid_chart(agg_df, cal_config), use_container_width=True)
+    st.plotly_chart(utils.create_hybrid_chart(agg_df, cal_config), use_container_width=True, key="main_hybrid_chart")
 
     # Mid-Section: Fulfillment and Stability Drivers
     c_left, c_mid, c_right = st.columns([1, 1, 1])
     with c_left:
-        st.plotly_chart(utils.create_modern_gauge(fulfillment, "PO Achievement"), use_container_width=True)
+        st.plotly_chart(utils.create_modern_gauge(fulfillment, "PO Achievement"), use_container_width=True, key="main_po_gauge")
     with c_mid:
-        st.plotly_chart(utils.create_modern_gauge(res['stability_index'], "Stability Index"), use_container_width=True)
+        st.plotly_chart(utils.create_modern_gauge(res['stability_index'], "Stability Index"), use_container_width=True, key="main_stability_gauge")
     with c_right:
         st.subheader("Stability Driver")
-        st.plotly_chart(utils.create_stability_driver_bar(res['mtbf_min'], res['mttr_min']), use_container_width=True)
+        st.plotly_chart(utils.create_stability_driver_bar(res['mtbf_min'], res['mttr_min']), use_container_width=True, key="main_driver_bar")
         st.caption(f"MTBF: {res['mtbf_min']:.1f}m | MTTR: {res['mttr_min']:.1f}m")
 
     # Bottom Row: Demand Path and Loss Bridge
     st.markdown("---")
     c_burn, c_bridge = st.columns([2, 1])
     with c_burn:
-        st.plotly_chart(utils.create_po_burnup(agg_df, po_target_qty, po_due_date), use_container_width=True)
+        st.plotly_chart(utils.create_po_burnup(agg_df, po_target_qty, po_due_date), use_container_width=True, key="main_burnup")
     with c_bridge:
-        st.plotly_chart(utils.plot_waterfall(res), use_container_width=True)
+        st.plotly_chart(utils.plot_waterfall(res), use_container_width=True, key="main_waterfall")
 
     with st.expander("🔬 Deep Dive: Shot-by-Shot Production Rhythm"):
-        st.plotly_chart(utils.plot_shot_analysis(res['processed_df']), use_container_width=True)
+        st.plotly_chart(utils.plot_shot_analysis(res['processed_df']), use_container_width=True, key="main_shot_analysis")
 
 # --- TAB 2: RISK TOWER ---
 with t_risk:
@@ -212,8 +212,8 @@ with t_compare:
             res_a = utils.CapacityRiskCalculator(df_a, e_config).results
             st.subheader(f"Asset: {tool_a}")
             st.metric("Avg Cycle Time", f"{res_a['processed_df']['actual_ct'].mean():.2f}s")
-            st.plotly_chart(utils.create_modern_gauge(res_a['stability_index'], "Stability"), use_container_width=True)
-            st.plotly_chart(utils.plot_waterfall(res_a), use_container_width=True)
+            st.plotly_chart(utils.create_modern_gauge(res_a['stability_index'], "Stability"), use_container_width=True, key="comp_gauge_a")
+            st.plotly_chart(utils.plot_waterfall(res_a), use_container_width=True, key="comp_waterfall_a")
 
         # Tool B Analysis
         with comp_col2:
@@ -222,8 +222,8 @@ with t_compare:
             res_b = utils.CapacityRiskCalculator(df_b, e_config).results
             st.subheader(f"Asset: {tool_b}")
             st.metric("Avg Cycle Time", f"{res_b['processed_df']['actual_ct'].mean():.2f}s")
-            st.plotly_chart(utils.create_modern_gauge(res_b['stability_index'], "Stability"), use_container_width=True)
-            st.plotly_chart(utils.plot_waterfall(res_b), use_container_width=True)
+            st.plotly_chart(utils.create_modern_gauge(res_b['stability_index'], "Stability"), use_container_width=True, key="comp_gauge_b")
+            st.plotly_chart(utils.plot_waterfall(res_b), use_container_width=True, key="comp_waterfall_b")
 
 # --- TAB 4: WHAT-IF SIMULATOR ---
 with t_sim:
