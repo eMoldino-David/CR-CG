@@ -529,13 +529,7 @@ def generate_po_prediction_data(df_po_shots, po_record, config):
     agg_daily = get_aggregated_data(df_po_shots, 'Daily', config) if not df_po_shots.empty else pd.DataFrame()
     
     if agg_daily.empty:
-        return {
-            'target_dates': target_dates, 'target_vals': target_vals,
-            'actual_dates': [], 'actual_cum': [],
-            'forecast_dates': [], 'forecast_avg': [], 'forecast_opt': [],
-            'due_date': due_date, 'start_date': start_date, 'total_qty': total_qty,
-            'current_cum': 0, 'avg_daily_rate': 0, 'opt_daily_rate': 0
-        }
+        return None
         
     agg_daily['Period'] = pd.to_datetime(agg_daily['Period']).dt.date
     agg_daily = agg_daily.sort_values('Period')
@@ -572,7 +566,7 @@ def generate_po_prediction_data(df_po_shots, po_record, config):
 
     return {
         'target_dates': target_dates, 'target_vals': target_vals,
-        'actual_dates': agg_daily['Period'].tolist(), 'actual_cum': agg_daily['Cumulative Actual'].tolist(),
+        'actual_dates': agg_daily['Period'], 'actual_cum': agg_daily['Cumulative Actual'],
         'forecast_dates': forecast_dates, 'forecast_avg': forecast_avg, 'forecast_opt': forecast_opt,
         'due_date': due_date, 'start_date': start_date, 'total_qty': total_qty,
         'current_cum': current_cum, 'avg_daily_rate': avg_daily_rate, 'opt_daily_rate': opt_daily_rate
@@ -912,34 +906,36 @@ def plot_po_burnup(pred_data):
     fig = go.Figure()
     
     # Target Burnup (Grey Dashed)
-    if pred_data['target_dates']:
+    if len(pred_data.get('target_dates', [])) > 0:
         fig.add_trace(go.Scatter(x=pred_data['target_dates'], y=pred_data['target_vals'], 
                                  mode='lines', name='PO Target Burn-up', line=dict(color='grey', dash='dash')))
                              
     # Actual Cumulative (Blue Line)
-    if pred_data['actual_dates']:
+    if len(pred_data.get('actual_dates', [])) > 0:
         fig.add_trace(go.Scatter(x=pred_data['actual_dates'], y=pred_data['actual_cum'], 
                                  mode='lines+markers', name='Actual Accumulated', line=dict(color=PASTEL_COLORS['blue'], width=3)))
                              
     # Forecast Avg (Orange Dot)
-    if pred_data['avg_daily_rate'] > 0 and pred_data['forecast_dates']:
+    if pred_data.get('avg_daily_rate', 0) > 0 and len(pred_data.get('forecast_dates', [])) > 0:
         fig.add_trace(go.Scatter(x=pred_data['forecast_dates'], y=pred_data['forecast_avg'], 
                                  mode='lines', name=f"Forecast (Avg: {pred_data['avg_daily_rate']:.0f}/d)", line=dict(color=PASTEL_COLORS['orange'], dash='dot')))
                              
     # Forecast Opt (Green Dot)
-    if pred_data['opt_daily_rate'] > 0 and pred_data['forecast_dates']:
+    if pred_data.get('opt_daily_rate', 0) > 0 and len(pred_data.get('forecast_dates', [])) > 0:
         fig.add_trace(go.Scatter(x=pred_data['forecast_dates'], y=pred_data['forecast_opt'], 
                                  mode='lines', name=f"Forecast (Opt: {pred_data['opt_daily_rate']:.0f}/d)", line=dict(color=PASTEL_COLORS['green'], dash='dot')))
                              
     # Annotations - Fix applied using Unix Timestamp mapping for Plotly compatibility
-    due_ts = pd.to_datetime(pred_data['due_date']).timestamp() * 1000
-    fig.add_vline(x=due_ts, line_width=2, line_dash="dash", line_color="red", annotation_text="PO Due Date")
-    fig.add_hline(y=pred_data['total_qty'], line_width=2, line_dash="solid", line_color="purple", annotation_text="PO Total Qty")
+    if pd.notna(pred_data.get('due_date')):
+        due_ts = pd.to_datetime(pred_data['due_date']).timestamp() * 1000
+        fig.add_vline(x=due_ts, line_width=2, line_dash="dash", line_color="red", annotation_text="PO Due Date")
+    
+    fig.add_hline(y=pred_data.get('total_qty', 0), line_width=2, line_dash="solid", line_color="purple", annotation_text="PO Total Qty")
     
     # Force the X-axis bounds to represent the exact same context duration as the periodic chart
-    start_dt = pd.to_datetime(pred_data['start_date'])
-    max_dt_target = pd.to_datetime(pred_data['target_dates'][-1]) if pred_data['target_dates'] else start_dt
-    max_dt_forecast = pd.to_datetime(pred_data['forecast_dates'][-1]) if pred_data['forecast_dates'] else max_dt_target
+    start_dt = pd.to_datetime(pred_data.get('start_date', pd.Timestamp.now()))
+    max_dt_target = pd.to_datetime(pred_data['target_dates'][-1]) if len(pred_data.get('target_dates', [])) > 0 else start_dt
+    max_dt_forecast = pd.to_datetime(pred_data['forecast_dates'][-1]) if len(pred_data.get('forecast_dates', [])) > 0 else max_dt_target
     end_dt = max(max_dt_target, max_dt_forecast)
 
     fig.update_layout(
