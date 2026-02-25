@@ -63,7 +63,8 @@ def load_all_data_cr(files):
             tool_col = get_col(["TOOLING ID", "EQUIPMENT CODE", "TOOL_ID", "TOOL"])
             if tool_col: df.rename(columns={tool_col: "tool_id"}, inplace=True)
 
-            time_col = get_col(["SHOT TIME", "TIMESTAMP", "DATE", "TIME"])
+            # Added SHOT_TIME to the mapping list
+            time_col = get_col(["SHOT TIME", "SHOT_TIME", "TIMESTAMP", "DATE", "TIME"])
             if time_col: df.rename(columns={time_col: "shot_time"}, inplace=True)
 
             act_ct_col = get_col(["ACTUAL CT", "ACTUAL_CT", "CYCLE TIME"])
@@ -72,10 +73,11 @@ def load_all_data_cr(files):
             app_ct_col = get_col(["APPROVED CT", "APPROVED_CT", "STD CT"])
             if app_ct_col: df.rename(columns={app_ct_col: "approved_ct"}, inplace=True)
 
-            cav_col = get_col(["WORKING CAVITIES", "CAVITIES"])
+            # Added WORKING_CAVITIES to the mapping list
+            cav_col = get_col(["WORKING CAVITIES", "WORKING_CAVITIES", "CAVITIES"])
             if cav_col: df.rename(columns={cav_col: "working_cavities"}, inplace=True)
             
-            area_col = get_col(["PLANT AREA", "AREA"])
+            area_col = get_col(["PLANT AREA", "PLANT_AREA", "AREA"])
             if area_col: df.rename(columns={area_col: "plant_area"}, inplace=True)
 
             if "shot_time" in df.columns and "actual_ct" in df.columns:
