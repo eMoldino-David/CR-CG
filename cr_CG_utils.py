@@ -578,6 +578,43 @@ def generate_po_prediction_data(df_po_shots, po_record, config):
         'current_cum': current_cum, 'avg_daily_rate': avg_daily_rate, 'opt_daily_rate': opt_daily_rate
     }
 
+def generate_po_summary_board(df_po_shots, po_record):
+    """Generates a structured summary DataFrame for a given PO."""
+    if po_record is None or pd.isna(po_record.get('po_number')):
+        return pd.DataFrame()
+        
+    # Gather tools involved uniquely
+    involved_tools = ", ".join(sorted([str(t) for t in df_po_shots['tool_id'].unique()])) if (not df_po_shots.empty and 'tool_id' in df_po_shots.columns) else "Unknown"
+    
+    # Safely extract supplier and plant if they exist in the production mapping
+    supplier = "Unknown"
+    plant = "Unknown"
+    if not df_po_shots.empty:
+        if 'supplier_id' in df_po_shots.columns:
+            sup_series = df_po_shots['supplier_id'].dropna()
+            if not sup_series.empty: supplier = str(sup_series.iloc[0])
+        if 'plant_id' in df_po_shots.columns:
+            plt_series = df_po_shots['plant_id'].dropna()
+            if not plt_series.empty: plant = str(plt_series.iloc[0])
+
+    start_dt = pd.to_datetime(po_record.get('start_date')).strftime('%Y-%m-%d') if pd.notnull(po_record.get('start_date')) else 'N/A'
+    due_dt = pd.to_datetime(po_record.get('due_date')).strftime('%Y-%m-%d') if pd.notnull(po_record.get('due_date')) else 'N/A'
+    
+    data = {
+        "Purchase Order #": [po_record.get('po_number', 'N/A')],
+        "Project": [po_record.get('project_id', 'N/A')],
+        "Component": [po_record.get('component_id', 'N/A')],
+        "Part": [po_record.get('part_id', 'N/A')],
+        "Assigned Tooling(s)": [involved_tools],
+        "Supplier": [supplier],
+        "Plant": [plant],
+        "Total Quantity": [po_record.get('total_qty', 0)],
+        "Start Date": [start_dt],
+        "Due Date": [due_dt]
+    }
+    
+    return pd.DataFrame(data)
+
 def generate_prediction_data(df_daily_agg, start_date, target_date, demand_target_total=None):
     """Fallback projection chart data generation."""
     if df_daily_agg.empty: return None
