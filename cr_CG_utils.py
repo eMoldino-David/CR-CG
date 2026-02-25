@@ -39,8 +39,45 @@ def format_seconds_to_dhm(total_seconds):
     if minutes > 0 or not parts: parts.append(f"{minutes}m")
     return " ".join(parts) if parts else "0m"
 
+def load_logistics_plan(file):
+    """Loads logistics plan CSV/Excel to extract PO information."""
+    if not file: return pd.DataFrame()
+    try:
+        df = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
+        col_map = {col.strip().upper(): col for col in df.columns}
+        def get_col(target_list):
+            for t in target_list:
+                if t in col_map: return col_map[t]
+            return None
+        
+        po_col = get_col(["PO_NUMBER", "PO", "ORDER"])
+        proj_col = get_col(["PROJECT", "PROJECT_ID"])
+        comp_col = get_col(["COMPONENT_ID", "COMPONENT"])
+        part_col = get_col(["PART_ID", "PART"])
+        qty_col = get_col(["TOTAL_QTY", "QUANTITY", "QTY", "TARGET_QTY"])
+        start_col = get_col(["START_DATE", "START"])
+        due_col = get_col(["DUE_DATE", "END_DATE", "DUE"])
+        
+        rename_dict = {}
+        if po_col: rename_dict[po_col] = 'po_number'
+        if proj_col: rename_dict[proj_col] = 'project_id'
+        if comp_col: rename_dict[comp_col] = 'component_id'
+        if part_col: rename_dict[part_col] = 'part_id'
+        if qty_col: rename_dict[qty_col] = 'total_qty'
+        if start_col: rename_dict[start_col] = 'start_date'
+        if due_col: rename_dict[due_col] = 'due_date'
+        
+        df.rename(columns=rename_dict, inplace=True)
+        if 'start_date' in df.columns: df['start_date'] = pd.to_datetime(df['start_date'], errors='coerce')
+        if 'due_date' in df.columns: df['due_date'] = pd.to_datetime(df['due_date'], errors='coerce')
+        if 'total_qty' in df.columns: df['total_qty'] = pd.to_numeric(df['total_qty'], errors='coerce').fillna(0)
+        
+        return df
+    except Exception:
+        return pd.DataFrame()
+
 def load_all_data_cr(files):
-    """Loads and standardizes data."""
+    """Loads and standardizes production shot data."""
     df_list = []
     for file in files:
         try:
@@ -50,6 +87,15 @@ def load_all_data_cr(files):
                 for t in target_list:
                     if t in col_map: return col_map[t]
                 return None
+
+            po_col = get_col(["PO_NUMBER", "PO", "ORDER"])
+            if po_col: df.rename(columns={po_col: "po_number"}, inplace=True)
+
+            sup_col = get_col(["SUPPLIER_ID", "SUPPLIER_NAME", "SUPPLIER"])
+            if sup_col: df.rename(columns={sup_col: "supplier_id"}, inplace=True)
+
+            plt_col = get_col(["PLANT_ID", "PLANT", "FACTORY"])
+            if plt_col: df.rename(columns={plt_col: "plant_id"}, inplace=True)
 
             project_col = get_col(["PROJECT", "PROJECT_NAME", "PROJECT_ID"])
             if project_col: df.rename(columns={project_col: "project_id"}, inplace=True)
@@ -63,17 +109,15 @@ def load_all_data_cr(files):
             tool_col = get_col(["TOOLING ID", "EQUIPMENT CODE", "TOOL_ID", "TOOL"])
             if tool_col: df.rename(columns={tool_col: "tool_id"}, inplace=True)
 
-            # Added SHOT_TIME to the mapping list
             time_col = get_col(["SHOT TIME", "SHOT_TIME", "TIMESTAMP", "DATE", "TIME"])
             if time_col: df.rename(columns={time_col: "shot_time"}, inplace=True)
 
             act_ct_col = get_col(["ACTUAL CT", "ACTUAL_CT", "CYCLE TIME"])
             if act_ct_col: df.rename(columns={act_ct_col: "actual_ct"}, inplace=True)
 
-            app_ct_col = get_col(["APPROVED CT", "APPROVED_CT", "STD CT"])
+            app_ct_col = get_col(["APPROVED CT", "APPROVED_CT", "TARGET CT", "TARGET_CT", "STD CT"])
             if app_ct_col: df.rename(columns={app_ct_col: "approved_ct"}, inplace=True)
 
-            # Added WORKING_CAVITIES to the mapping list
             cav_col = get_col(["WORKING CAVITIES", "WORKING_CAVITIES", "CAVITIES"])
             if cav_col: df.rename(columns={cav_col: "working_cavities"}, inplace=True)
             
@@ -91,7 +135,7 @@ def load_all_data_cr(files):
     
     # Ensure hierarchical columns exist and are string-formatted for clean filtering
     if not df_final.empty:
-        for col in ['project_id', 'component_id', 'part_id', 'tool_id']:
+        for col in ['po_number', 'supplier_id', 'plant_id', 'project_id', 'component_id', 'part_id', 'tool_id']:
             if col not in df_final.columns:
                 df_final[col] = "Unknown"
             else:
@@ -383,36 +427,93 @@ def get_aggregated_data(df, freq_mode, config):
         
     return pd.DataFrame(rows)
 
+def generate_po_prediction_data(df_po_shots, po_record, config):
+    """Generates time-series data specifically for PO Burn-up charting."""
+    if df_po_shots.empty or pd.isna(po_record.get('start_date')) or pd.isna(po_record.get('due_date')):
+        return None
+        
+    start_date = po_record['start_date'].date() if isinstance(po_record['start_date'], pd.Timestamp) else pd.to_datetime(po_record['start_date']).date()
+    due_date = po_record['due_date'].date() if isinstance(po_record['due_date'], pd.Timestamp) else pd.to_datetime(po_record['due_date']).date()
+    total_qty = po_record['total_qty']
+
+    # Get daily aggregations for actuals
+    agg_daily = get_aggregated_data(df_po_shots, 'Daily', config)
+    if agg_daily.empty:
+        return None
+        
+    agg_daily['Period'] = pd.to_datetime(agg_daily['Period']).dt.date
+    agg_daily = agg_daily.sort_values('Period')
+    agg_daily['Cumulative Actual'] = agg_daily['Actual Output'].cumsum()
+    
+    # Target Burnup Line (Ideal linear progress)
+    total_days = (due_date - start_date).days
+    if total_days <= 0: total_days = 1
+    
+    target_dates = [start_date + timedelta(days=i) for i in range(total_days + 1)]
+    target_vals = [(total_qty / total_days) * i for i in range(total_days + 1)]
+    
+    last_actual_date = agg_daily['Period'].max()
+    current_cum = agg_daily['Cumulative Actual'].max()
+    
+    # Calculate optimal rate from the whole subset
+    calc = CapacityRiskCalculator(df_po_shots, **config)
+    res = calc.results
+    
+    days_elapsed = (last_actual_date - start_date).days + 1
+    if days_elapsed <= 0: days_elapsed = 1
+    
+    avg_daily_rate = current_cum / days_elapsed
+    opt_daily_rate = res['optimal_output_parts'] / days_elapsed if res else 0
+    
+    remaining_qty = total_qty - current_cum
+    max_proj_days = 0
+    
+    if remaining_qty > 0:
+        days_to_finish_avg = int(remaining_qty / avg_daily_rate) + 1 if avg_daily_rate > 0 else 30
+        days_to_finish_opt = int(remaining_qty / opt_daily_rate) + 1 if opt_daily_rate > 0 else 30
+            
+        max_proj_days = max(days_to_finish_avg, days_to_finish_opt, (due_date - last_actual_date).days)
+        max_proj_days = min(max_proj_days, 365) # cap projection at 1 year max
+    
+    forecast_dates = [last_actual_date + timedelta(days=i) for i in range(max_proj_days + 1)]
+    forecast_avg = [current_cum + (avg_daily_rate * i) for i in range(max_proj_days + 1)]
+    forecast_opt = [current_cum + (opt_daily_rate * i) for i in range(max_proj_days + 1)]
+
+    return {
+        'target_dates': target_dates,
+        'target_vals': target_vals,
+        'actual_dates': agg_daily['Period'],
+        'actual_cum': agg_daily['Cumulative Actual'],
+        'forecast_dates': forecast_dates,
+        'forecast_avg': forecast_avg,
+        'forecast_opt': forecast_opt,
+        'due_date': due_date,
+        'total_qty': total_qty,
+        'current_cum': current_cum,
+        'avg_daily_rate': avg_daily_rate,
+        'opt_daily_rate': opt_daily_rate
+    }
+
 def generate_prediction_data(df_daily_agg, start_date, target_date, demand_target_total=None):
-    """
-    Generates time-series data for the prediction chart.
-    """
+    """Fallback projection chart data generation."""
     if df_daily_agg.empty: return None
 
-    # Ensure dates
     df = df_daily_agg.copy()
     df['Period'] = pd.to_datetime(df['Period'])
     df = df.sort_values('Period')
     
-    # Calculate Historic Cumulative
     df['Cumulative Actual'] = df['Actual Output'].cumsum()
     
-    # Current State
     last_historic_ts = df['Period'].max()
     last_historic_date = last_historic_ts.date() if hasattr(last_historic_ts, 'date') else last_historic_ts
-    
     current_cumulative = df['Cumulative Actual'].max()
     
-    # Calculate Daily Run Rates
     days_with_data = (last_historic_date - df['Period'].min().date()).days + 1
     if days_with_data < 1: days_with_data = 1
     
     avg_daily_rate = df['Actual Output'].sum() / days_with_data
-    # Use P90 (Peak) rate for "Best Case"
     peak_daily_rate = df['Actual Output'].quantile(0.90) if len(df) > 5 else df['Actual Output'].max()
 
-    # Projection Timeline
-    # Ensure target_date is a date object
     if isinstance(target_date, datetime):
         target_date = target_date.date()
         
@@ -421,11 +522,9 @@ def generate_prediction_data(df_daily_agg, start_date, target_date, demand_targe
     
     future_dates = [last_historic_date + timedelta(days=i) for i in range(projection_days + 1)]
     
-    # Projections
     proj_avg = [current_cumulative + (avg_daily_rate * i) for i in range(len(future_dates))]
     proj_peak = [current_cumulative + (peak_daily_rate * i) for i in range(len(future_dates))]
     
-    # Required Rate Calculation (if Demand Target is set)
     req_rate = 0
     proj_req = []
     if demand_target_total:
@@ -657,6 +756,37 @@ def generate_mttr_mtbf_analysis(analysis_df):
 # ==============================================================================
 # --- PLOTTING FUNCTIONS ---
 # ==============================================================================
+
+def plot_po_burnup(pred_data):
+    """Plots the PO specific Burn-Up tracking chart."""
+    if not pred_data: return go.Figure()
+    fig = go.Figure()
+    
+    # Target Burnup (Grey Dashed)
+    fig.add_trace(go.Scatter(x=pred_data['target_dates'], y=pred_data['target_vals'], 
+                             mode='lines', name='PO Target Burn-up', line=dict(color='grey', dash='dash')))
+                             
+    # Actual Cumulative (Blue Line)
+    fig.add_trace(go.Scatter(x=pred_data['actual_dates'], y=pred_data['actual_cum'], 
+                             mode='lines+markers', name='Actual Accumulated', line=dict(color=PASTEL_COLORS['blue'], width=3)))
+                             
+    # Forecast Avg (Orange Dot)
+    if pred_data['avg_daily_rate'] > 0:
+        fig.add_trace(go.Scatter(x=pred_data['forecast_dates'], y=pred_data['forecast_avg'], 
+                                 mode='lines', name=f"Forecast (Avg: {pred_data['avg_daily_rate']:.0f}/d)", line=dict(color=PASTEL_COLORS['orange'], dash='dot')))
+                             
+    # Forecast Opt (Green Dot)
+    if pred_data['opt_daily_rate'] > 0:
+        fig.add_trace(go.Scatter(x=pred_data['forecast_dates'], y=pred_data['forecast_opt'], 
+                                 mode='lines', name=f"Forecast (Opt: {pred_data['opt_daily_rate']:.0f}/d)", line=dict(color=PASTEL_COLORS['green'], dash='dot')))
+                             
+    # Annotations
+    due_str = pred_data['due_date'].strftime('%Y-%m-%d')
+    fig.add_vline(x=due_str, line_width=2, line_dash="dash", line_color="red", annotation_text="PO Due Date")
+    fig.add_hline(y=pred_data['total_qty'], line_width=2, line_dash="solid", line_color="purple", annotation_text="PO Total Qty")
+    
+    fig.update_layout(title="PO Target Burn-up vs Reality", hovermode="x unified", height=500, yaxis_title="Accumulated Parts Output", xaxis_title="Date")
+    return fig
 
 def create_time_breakdown_donut(total_sec, prod_sec, down_sec):
     c_prod = PASTEL_COLORS['green']
@@ -911,7 +1041,7 @@ def plot_performance_breakdown(df_agg, x_col, benchmark_mode):
     if "Target" in str(benchmark_mode):
         fig.add_trace(go.Scatter(x=df_agg[x_col], y=df_agg['Target Output'], name='Target Output', mode='lines', line=dict(color=PASTEL_COLORS['target_line'], dash='dash')))
 
-    fig.update_layout(barmode='stack', title="Performance Breakdown", hovermode="x unified", height=450)
+    fig.update_layout(barmode='stack', title="Periodic Performance Breakdown", hovermode="x unified", height=450)
     return fig
 
 def plot_shot_analysis(df_shots, zoom_y=None):
