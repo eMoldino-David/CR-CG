@@ -942,6 +942,7 @@ def main():
         df_part = df_all
 
     tool_ids = sorted(df_part['tool_id'].astype(str).unique().tolist())
+
     
     if not tool_ids:
         st.sidebar.warning("No tools found for this selection.")
