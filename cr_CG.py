@@ -361,7 +361,7 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
 
         # --- GRAPH 1: Periodic Breakdown vs Demand ---
         st.markdown(f"### 1. Periodic Production vs Estimated Demand")
-        col_freq, col_tool = st.columns([1, 2])
+        col_freq, col_tool, col_layout = st.columns([1, 2, 1])
         with col_freq:
             bar_freq = st.selectbox("Select Frequency Spread", ["Weekly", "Monthly", "Daily"], index=0)
         
@@ -371,6 +371,9 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
                 selected_tool_for_bar = st.radio("Select View Segment", options, horizontal=True)
             else:
                 selected_tool_for_bar = "All Tracked Tools Combined"
+                
+        with col_layout:
+            chart_barmode = st.selectbox("Bar Chart Layout", ["Grouped by PO (Cluster)", "Stacked by Tooling"], index=0)
         
         df_bar_view = df_po_shots if selected_tool_for_bar == "All Tracked Tools Combined" else df_po_shots[df_po_shots['tool_id'] == selected_tool_for_bar]
         
@@ -382,7 +385,7 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
         
         if not agg_po.empty:
             # Fixed disconnect: passed processed data and track_mode to match utils requirement
-            st.plotly_chart(cr_CG_utils.plot_po_periodic_chart(agg_po, df_processed_for_chart, bar_freq, track_mode), use_container_width=True)
+            st.plotly_chart(cr_CG_utils.plot_po_periodic_chart(agg_po, df_processed_for_chart, bar_freq, track_mode, chart_barmode), use_container_width=True)
         else:
             st.warning("No periodic data available.")
 
@@ -411,7 +414,10 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
                 
                 # Protect against series max
                 actual_dates = pred_data.get('actual_dates', [])
-                last_act_date = actual_dates[-1] if len(actual_dates) > 0 else min_start.date()
+                if len(actual_dates) > 0:
+                    last_act_date = actual_dates.iloc[-1] if hasattr(actual_dates, 'iloc') else actual_dates[-1]
+                else:
+                    last_act_date = min_start.date()
                 
                 finish_avg = last_act_date + timedelta(days=int(days_avg))
                 finish_opt = last_act_date + timedelta(days=int(days_opt))
