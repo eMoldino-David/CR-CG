@@ -906,7 +906,8 @@ def plot_po_periodic_chart(agg_po, df_raw, bar_freq):
     else:
         fig.add_trace(go.Bar(
             x=agg_po['Period'], y=agg_po['Actual Output'], 
-            name='Actual Output', marker_color=PASTEL_COLORS['blue']
+            name='Produced Quantity', 
+            marker_color=PASTEL_COLORS['blue']
         ))
             
     if 'Configured Max Capacity' in agg_po.columns:
@@ -935,15 +936,46 @@ def plot_po_burnup(pred_data, po_record=None):
     if not pred_data: return go.Figure()
     fig = go.Figure()
     
+    # --- Calculate Adherence Rate ---
+    start_dt_val = pd.to_datetime(pred_data.get('start_date', pd.Timestamp.now())).date()
+    due_dt_val = pd.to_datetime(pred_data.get('due_date', pd.Timestamp.now())).date()
+    tot_qty = pred_data.get('total_qty', 0)
+    
+    total_duration_days = max(1, (due_dt_val - start_dt_val).days)
+    target_rate_per_day = tot_qty / total_duration_days
+    
+    adherence_text = []
+    actual_dates_list = pred_data.get('actual_dates', [])
+    actual_cum_list = pred_data.get('actual_cum', [])
+    
+    for d, act_val in zip(actual_dates_list, actual_cum_list):
+        d_val = pd.to_datetime(d).date()
+        days_elapsed = max(1, (d_val - start_dt_val).days)
+        tgt_val = target_rate_per_day * days_elapsed
+        
+        adh = (act_val / tgt_val * 100) if tgt_val > 0 else 100.0
+        adherence_text.append(f"{adh:.1f}%")
+        
+    current_adh_str = adherence_text[-1] if adherence_text else "N/A"
+    
     # Target Burnup (Grey Dashed)
     if len(pred_data.get('target_dates', [])) > 0:
         fig.add_trace(go.Scatter(x=pred_data['target_dates'], y=pred_data['target_vals'], 
                                  mode='lines', name='Target Burn-up', line=dict(color='grey', dash='dash')))
                              
-    # Actual Cumulative (Blue Line)
-    if len(pred_data.get('actual_dates', [])) > 0:
-        fig.add_trace(go.Scatter(x=pred_data['actual_dates'], y=pred_data['actual_cum'], 
-                                 mode='lines+markers', name='Actual Accumulated', line=dict(color=PASTEL_COLORS['blue'], width=3)))
+    # Produced Quantity (Blue Line with area shading)
+    if len(actual_dates_list) > 0:
+        fig.add_trace(go.Scatter(
+            x=actual_dates_list, 
+            y=actual_cum_list, 
+            mode='lines+markers', 
+            name='Produced Quantity', 
+            fill='tozeroy',
+            fillcolor='rgba(52, 152, 219, 0.2)',
+            line=dict(color=PASTEL_COLORS['blue'], width=3),
+            customdata=adherence_text,
+            hovertemplate='Date: %{x}<br>Produced Qty: %{y:,.0f}<br>Adherence: %{customdata}<extra></extra>'
+        ))
                              
     # Forecast Avg (Orange Dot)
     if pred_data.get('avg_daily_rate', 0) > 0 and len(pred_data.get('forecast_dates', [])) > 0:
@@ -959,15 +991,17 @@ def plot_po_burnup(pred_data, po_record=None):
         due_ts = pd.to_datetime(pred_data['due_date']).timestamp() * 1000
         fig.add_vline(x=due_ts, line_width=2, line_dash="dash", line_color="red", annotation_text="PO Due Date")
     
-    fig.add_hline(y=pred_data.get('total_qty', 0), line_width=2, line_dash="solid", line_color="purple", annotation_text="Target Qty")
+    fig.add_hline(y=tot_qty, line_width=2, line_dash="solid", line_color="purple", annotation_text="Target Qty")
     
     start_dt = pd.to_datetime(pred_data.get('start_date', pd.Timestamp.now()))
     max_dt_target = pd.to_datetime(pred_data['target_dates'][-1]) if len(pred_data.get('target_dates', [])) > 0 else start_dt
     max_dt_forecast = pd.to_datetime(pred_data['forecast_dates'][-1]) if len(pred_data.get('forecast_dates', [])) > 0 else max_dt_target
     end_dt = max(max_dt_target, max_dt_forecast)
 
+    chart_title = f"PO Target Burn-up vs Reality (Current Adherence: {current_adh_str})"
+
     fig.update_layout(
-        title="PO Target Burn-up vs Reality", 
+        title=chart_title, 
         hovermode="x unified", 
         height=500, 
         yaxis_title="Accumulated Parts Output", 
