@@ -322,133 +322,109 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
             st.warning(f"No Purchase Orders are associated with your current {track_mode} selection. Please select at least one item.")
             return
             
-        # Aggregate the Logistics PO records safely into a composite ONLY for the Summary Box
         subset_logistics = df_logistics[df_logistics['po_number'].isin(selected_po_list)]
         df_po_shots = df_scope[df_scope['po_number'].isin(selected_po_list)].copy()
         
-        total_qty = pd.to_numeric(subset_logistics['total_qty'], errors='coerce').sum()
-        min_start = pd.to_datetime(subset_logistics['start_date']).min()
-        max_due = pd.to_datetime(subset_logistics['due_date']).max()
-        
-        po_display_name = ", ".join(selected_po_list) if len(selected_po_list) <= 3 else f"{len(selected_po_list)} POs Selected"
-        proj_display = ", ".join(subset_logistics['project_id'].astype(str).unique())
-        part_display = ", ".join(subset_logistics['part_id'].astype(str).unique())
-        
         # --- PO Summary Box ---
-        with st.container(border=True):
-            st.markdown(f"### 📋 {track_mode} Summary Details")
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Tracked POs", po_display_name)
-            col2.metric("Project / Part", f"{proj_display[:20]} / {part_display[:20]}")
-            col3.metric("Total Target Quantity", f"{total_qty:,.0f}")
+        st.markdown("### 📋 Selected Purchase Orders Summary")
+        
+        summary_data = []
+        for _, row in subset_logistics.iterrows():
+            summary_data.append({
+                "PO Number": row['po_number'],
+                "Project": row['project_id'],
+                "Part": row['part_id'],
+                "Target Qty": f"{row['total_qty']:,.0f}",
+                "Start Date": pd.to_datetime(row['start_date']).strftime('%Y-%m-%d') if pd.notna(row['start_date']) else "N/A",
+                "Due Date": pd.to_datetime(row['due_date']).strftime('%Y-%m-%d') if pd.notna(row['due_date']) else "N/A"
+            })
             
-            involved_tools = df_po_shots['tool_id'].unique()
-            tools_str = ", ".join([str(t) for t in involved_tools])
-            col4.metric("Assigned Toolings", tools_str if len(tools_str) < 40 else f"{len(involved_tools)} Tools")
-            
-            c1, c2 = st.columns(2)
-            c1.write(f"**Earliest Start Date:** {min_start.strftime('%Y-%m-%d') if pd.notnull(min_start) else 'N/A'}")
-            c2.write(f"**Latest Due Date:** {max_due.strftime('%Y-%m-%d') if pd.notnull(max_due) else 'N/A'}")
+        st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
 
         st.markdown("---")
-
-        # --- GRAPH 1: Periodic Breakdown vs Demand ---
-        st.markdown(f"### 1. Periodic Production vs Estimated Demand")
-        col_freq, col_tool, col_layout = st.columns([1, 2, 1])
+        
+        # --- Single PO Deep Dive Graphs ---
+        st.markdown("### 📈 Single PO Deep Dive")
+        st.info("To maintain accurate timelines and capacity analysis, performance graphs isolate and process one Purchase Order at a time. The bars will automatically stack if multiple toolings are used.")
+        
+        col_po, col_freq = st.columns([2, 1])
+        with col_po:
+            selected_graph_po = st.selectbox("Select Purchase Order for Visualization:", selected_po_list)
         with col_freq:
             bar_freq = st.selectbox("Select Frequency Spread", ["Weekly", "Monthly", "Daily"], index=0)
-        
-        with col_tool:
-            if len(involved_tools) > 1:
-                options = ["All Tracked Tools Combined"] + list(involved_tools)
-                selected_tool_for_bar = st.radio("Select View Segment", options, horizontal=True)
-            else:
-                selected_tool_for_bar = "All Tracked Tools Combined"
-                
-        with col_layout:
-            chart_barmode = st.selectbox("Bar Chart Layout", ["Grouped by PO (Cluster)", "Stacked by Tooling"], index=0)
-        
-        df_bar_view = df_po_shots if selected_tool_for_bar == "All Tracked Tools Combined" else df_po_shots[df_po_shots['tool_id'] == selected_tool_for_bar]
+            
+        po_record = subset_logistics[subset_logistics['po_number'] == selected_graph_po].iloc[0].to_dict()
+        df_single_po_shots = df_po_shots[df_po_shots['po_number'] == selected_graph_po].copy()
+        involved_tools = df_single_po_shots['tool_id'].unique()
         
         # Process the raw data to generate 'stop_flag' and other metrics needed for the chart
-        calc_for_chart = cr_CG_utils.CapacityRiskCalculator(df_bar_view, **config)
-        df_processed_for_chart = calc_for_chart.results.get('processed_df', df_bar_view)
+        calc_for_chart = cr_CG_utils.CapacityRiskCalculator(df_single_po_shots, **config)
+        df_processed_for_chart = calc_for_chart.results.get('processed_df', df_single_po_shots)
         
-        # CHANGED: We now pass the entire `subset_logistics` dataframe so it can separate lines by PO
-        agg_po_dict = cr_CG_utils.generate_po_periodic_data(df_bar_view, subset_logistics, bar_freq, config, working_days_per_week, working_hours_per_day)
+        agg_po = cr_CG_utils.generate_po_periodic_data(df_single_po_shots, po_record, bar_freq, config, working_days_per_week, working_hours_per_day)
         
-        if agg_po_dict:
-            st.plotly_chart(cr_CG_utils.plot_po_periodic_chart(agg_po_dict, df_processed_for_chart, bar_freq, track_mode, chart_barmode), use_container_width=True)
+        st.markdown(f"#### 1. Periodic Production vs Estimated Demand ({selected_graph_po})")
+        
+        if not agg_po.empty:
+            st.plotly_chart(cr_CG_utils.plot_po_periodic_chart(agg_po, df_processed_for_chart, bar_freq), use_container_width=True)
         else:
             st.warning("No periodic data available.")
 
         st.markdown("---")
         
         # --- GRAPH 2: Burn Up Chart ---
-        st.markdown(f"### 2. Specific Target Burn-Up ({track_mode})")
+        st.markdown(f"#### 2. Target Burn-Up ({selected_graph_po})")
         
-        # Isolate Burn-Up down to a single selected PO to avoid unreadable crossed lines
-        if len(selected_po_list) > 1:
-            selected_burnup_po = st.selectbox("Select Specific PO to View Detailed Burn-Up:", selected_po_list)
-        else:
-            selected_burnup_po = selected_po_list[0]
-
-        po_spec_log = subset_logistics[subset_logistics['po_number'] == selected_burnup_po]
-        
-        if not po_spec_log.empty:
-            po_specific_logistics_record = po_spec_log.iloc[0].to_dict()
-            df_po_specific_shots = df_po_shots[df_po_shots['po_number'] == selected_burnup_po].copy()
+        pred_data = cr_CG_utils.generate_po_prediction_data(df_single_po_shots, po_record, config)
+        if pred_data:
+            st.plotly_chart(cr_CG_utils.plot_po_burnup(pred_data, po_record), use_container_width=True)
             
-            pred_data = cr_CG_utils.generate_po_prediction_data(df_po_specific_shots, po_specific_logistics_record, config)
-            if pred_data:
-                st.plotly_chart(cr_CG_utils.plot_po_burnup(pred_data, po_spec_log), use_container_width=True)
-                
-                # --- Forecast Analysis Insights ---
-                current_cum = pred_data['current_cum']
-                target_qty = pred_data['total_qty']
-                avg_rate = pred_data['avg_daily_rate']
-                opt_rate = pred_data['opt_daily_rate']
-                due_date = pred_data['due_date']
-                
-                if current_cum >= target_qty:
-                    st.success(f"🎉 **Target Fulfilled!** Current output ({current_cum:,.0f}) has met or exceeded the order quantity for {selected_burnup_po} ({target_qty:,.0f}).")
-                else:
-                    remaining = target_qty - current_cum
-                    days_avg = remaining / avg_rate if avg_rate > 0 else 9999
-                    days_opt = remaining / opt_rate if opt_rate > 0 else 9999
-                    
-                    # Protect against series max
-                    actual_dates = pred_data.get('actual_dates', [])
-                    if len(actual_dates) > 0:
-                        last_act_date = actual_dates.iloc[-1] if hasattr(actual_dates, 'iloc') else actual_dates[-1]
-                    else:
-                        last_act_date = po_specific_logistics_record['start_date'].date()
-                    
-                    finish_avg = last_act_date + timedelta(days=int(days_avg))
-                    finish_opt = last_act_date + timedelta(days=int(days_opt))
-                    
-                    status_color = "#ff6961" if finish_avg > due_date else "#77dd77"
-                    status_text = "LATE - AT RISK" if finish_avg > due_date else "ON TRACK"
-                    
-                    analysis_html = f"""
-                    <div style="background-color: #262730; padding: 15px; border-radius: 5px; border: 1px solid #41424C; margin-bottom: 20px;">
-                        <h4 style="margin-top:0;">Forecast Analysis for {selected_burnup_po}</h4>
-                        <ul>
-                            <li><strong>Status:</strong> <span style="color:{status_color}; font-weight:bold;">{status_text}</span> to meet demand by {due_date.strftime('%Y-%m-%d')}.</li>
-                            <li>To meet demand of <strong>{target_qty:,.0f}</strong>, you need <strong>{remaining:,.0f}</strong> more parts.</li>
-                            <li>At your current rate ({avg_rate:,.0f}/day), you are projected to finish on <strong>{finish_avg.strftime('%Y-%m-%d')}</strong>.</li>
-                            <li>At optimal rate ({opt_rate:,.0f}/day), you could finish by <strong>{finish_opt.strftime('%Y-%m-%d')}</strong>.</li>
-                        </ul>
-                    </div>
-                    """
-                    st.markdown(analysis_html, unsafe_allow_html=True)
+            # --- Forecast Analysis Insights ---
+            current_cum = pred_data['current_cum']
+            target_qty = pred_data['total_qty']
+            avg_rate = pred_data['avg_daily_rate']
+            opt_rate = pred_data['opt_daily_rate']
+            due_date = pred_data['due_date']
+            
+            if current_cum >= target_qty:
+                st.success(f"🎉 **Target Fulfilled!** Current output ({current_cum:,.0f}) has met or exceeded the order quantity for {selected_graph_po} ({target_qty:,.0f}).")
             else:
-                st.warning(f"Not enough production data to generate burn-up for {selected_burnup_po}.")
+                remaining = target_qty - current_cum
+                days_avg = remaining / avg_rate if avg_rate > 0 else 9999
+                days_opt = remaining / opt_rate if opt_rate > 0 else 9999
+                
+                # Protect against series max
+                actual_dates = pred_data.get('actual_dates', [])
+                if len(actual_dates) > 0:
+                    last_act_date = actual_dates.iloc[-1] if hasattr(actual_dates, 'iloc') else actual_dates[-1]
+                else:
+                    last_act_date = po_record['start_date'].date() if isinstance(po_record['start_date'], pd.Timestamp) else pd.to_datetime(po_record['start_date']).date()
+                
+                finish_avg = last_act_date + timedelta(days=int(days_avg))
+                finish_opt = last_act_date + timedelta(days=int(days_opt))
+                
+                status_color = "#ff6961" if finish_avg > due_date else "#77dd77"
+                status_text = "LATE - AT RISK" if finish_avg > due_date else "ON TRACK"
+                
+                analysis_html = f"""
+                <div style="background-color: #262730; padding: 15px; border-radius: 5px; border: 1px solid #41424C; margin-bottom: 20px;">
+                    <h4 style="margin-top:0;">Forecast Analysis for {selected_graph_po}</h4>
+                    <ul>
+                        <li><strong>Status:</strong> <span style="color:{status_color}; font-weight:bold;">{status_text}</span> to meet demand by {due_date.strftime('%Y-%m-%d')}.</li>
+                        <li>To meet demand of <strong>{target_qty:,.0f}</strong>, you need <strong>{remaining:,.0f}</strong> more parts.</li>
+                        <li>At your current rate ({avg_rate:,.0f}/day), you are projected to finish on <strong>{finish_avg.strftime('%Y-%m-%d')}</strong>.</li>
+                        <li>At optimal rate ({opt_rate:,.0f}/day), you could finish by <strong>{finish_opt.strftime('%Y-%m-%d')}</strong>.</li>
+                    </ul>
+                </div>
+                """
+                st.markdown(analysis_html, unsafe_allow_html=True)
+        else:
+            st.warning(f"Not enough production data to generate burn-up for {selected_graph_po}.")
             
         # --- Breakdown per Tooling Table ---
         st.markdown("### Breakdown per Active Tooling")
         tool_summary = []
-        for tool_id, tool_df in df_po_shots.groupby('tool_id'):
+        for tool_id, tool_df in df_single_po_shots.groupby('tool_id'):
             calc = cr_CG_utils.CapacityRiskCalculator(tool_df, **config)
             res = calc.results
             if not res: continue
