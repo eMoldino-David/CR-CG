@@ -878,12 +878,16 @@ def generate_mttr_mtbf_analysis(analysis_df):
 # --- PLOTTING FUNCTIONS ---
 # ==============================================================================
 
-def plot_po_periodic_chart(agg_po, df_raw, bar_freq, track_mode):
+def plot_po_periodic_chart(agg_po, df_raw, bar_freq, track_mode, chart_barmode="Stacked by Tooling"):
     """Plots the periodic stacked bar chart for PO tracking vs Demand & Configured Capacity."""
     fig = go.Figure()
     
     # Determine what to stack the bars by based on what makes sense for the view mode
-    breakdown_col = 'po_number' if 'Purchase Order' not in track_mode else 'tool_id'
+    if "Grouped" in chart_barmode:
+        breakdown_col = 'po_number' if 'Purchase Order' in track_mode else 'tool_id'
+    else:
+        breakdown_col = 'tool_id'
+        
     if breakdown_col not in df_raw.columns:
         breakdown_col = 'tool_id' # Safe fallback
         
@@ -931,9 +935,11 @@ def plot_po_periodic_chart(agg_po, df_raw, bar_freq, track_mode):
         line=dict(color=PASTEL_COLORS['red'], dash='dash', width=2)
     ))
     
+    barmode_type = 'group' if "Grouped" in chart_barmode else 'stack'
+    
     fig.update_layout(
         title=f"Periodic Production vs Demand ({bar_freq})",
-        barmode='stack', hovermode="x unified", height=450,
+        barmode=barmode_type, hovermode="x unified", height=450,
         yaxis_title="Parts Output", xaxis_title="Period"
     )
     return fig
