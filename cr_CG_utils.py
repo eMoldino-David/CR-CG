@@ -529,7 +529,13 @@ def generate_po_prediction_data(df_po_shots, po_record, config):
     agg_daily = get_aggregated_data(df_po_shots, 'Daily', config) if not df_po_shots.empty else pd.DataFrame()
     
     if agg_daily.empty:
-        return None
+        return {
+            'target_dates': target_dates, 'target_vals': target_vals,
+            'actual_dates': pd.Series(dtype=object), 'actual_cum': pd.Series(dtype=float),
+            'forecast_dates': [], 'forecast_avg': [], 'forecast_opt': [],
+            'due_date': due_date, 'start_date': start_date, 'total_qty': total_qty,
+            'current_cum': 0, 'avg_daily_rate': 0, 'opt_daily_rate': 0
+        }
         
     agg_daily['Period'] = pd.to_datetime(agg_daily['Period']).dt.date
     agg_daily = agg_daily.sort_values('Period')
@@ -872,15 +878,47 @@ def generate_mttr_mtbf_analysis(analysis_df):
 # --- PLOTTING FUNCTIONS ---
 # ==============================================================================
 
-def plot_po_periodic_chart(agg_po, bar_freq):
-    """Plots the periodic bar chart for PO tracking vs Demand & Configured Capacity."""
+def plot_po_periodic_chart(agg_po, df_raw, bar_freq, track_mode):
+    """Plots the periodic stacked bar chart for PO tracking vs Demand & Configured Capacity."""
     fig = go.Figure()
     
-    fig.add_trace(go.Bar(
-        x=agg_po['Period'], y=agg_po['Actual Output'], 
-        name='Actual Output', marker_color=PASTEL_COLORS['blue']
-    ))
+    # Determine what to stack the bars by based on what makes sense for the view mode
+    breakdown_col = 'po_number' if 'Purchase Order' not in track_mode else 'tool_id'
+    if breakdown_col not in df_raw.columns:
+        breakdown_col = 'tool_id' # Safe fallback
+        
+    prod_df = df_raw[df_raw['stop_flag'] == 0].copy()
     
+    if not prod_df.empty:
+        # Assign accurate period bounds based on the frequency selected
+        if bar_freq == 'Daily':
+            prod_df['Period'] = prod_df['shot_time'].dt.date.astype(str)
+        elif bar_freq == 'Weekly':
+            prod_df['Period'] = prod_df['shot_time'].dt.to_period('W').astype(str)
+        elif bar_freq == 'Monthly':
+            prod_df['Period'] = prod_df['shot_time'].dt.to_period('M').astype(str)
+        else:
+            prod_df['Period'] = prod_df['shot_time'].dt.date.astype(str)
+            
+        bar_data = prod_df.groupby(['Period', breakdown_col])['working_cavities'].sum().reset_index()
+        
+        unique_segments = bar_data[breakdown_col].unique()
+        colors = px.colors.qualitative.Pastel
+        
+        for i, segment in enumerate(unique_segments):
+            seg_data = bar_data[bar_data[breakdown_col] == segment]
+            fig.add_trace(go.Bar(
+                x=seg_data['Period'], y=seg_data['working_cavities'],
+                name=f'{segment}', marker_color=colors[i % len(colors)]
+            ))
+    else:
+        # Safe fallback if raw data aggregation fails
+        fig.add_trace(go.Bar(
+            x=agg_po['Period'], y=agg_po['Actual Output'], 
+            name='Actual Output', marker_color=PASTEL_COLORS['blue']
+        ))
+    
+    # Overlay lines
     fig.add_trace(go.Scatter(
         x=agg_po['Period'], y=agg_po['Configured Max Capacity'], 
         name='Configured Max Capacity', mode='lines+markers', 
@@ -895,20 +933,20 @@ def plot_po_periodic_chart(agg_po, bar_freq):
     
     fig.update_layout(
         title=f"Periodic Production vs Demand ({bar_freq})",
-        barmode='group', hovermode="x unified", height=450,
+        barmode='stack', hovermode="x unified", height=450,
         yaxis_title="Parts Output", xaxis_title="Period"
     )
     return fig
 
-def plot_po_burnup(pred_data):
-    """Plots the PO specific Burn-Up tracking chart."""
+def plot_po_burnup(pred_data, po_logistics_df=None):
+    """Plots the PO specific Burn-Up tracking chart with support for multiple PO Due Date annotations."""
     if not pred_data: return go.Figure()
     fig = go.Figure()
     
     # Target Burnup (Grey Dashed)
     if len(pred_data.get('target_dates', [])) > 0:
         fig.add_trace(go.Scatter(x=pred_data['target_dates'], y=pred_data['target_vals'], 
-                                 mode='lines', name='PO Target Burn-up', line=dict(color='grey', dash='dash')))
+                                 mode='lines', name='Target Burn-up', line=dict(color='grey', dash='dash')))
                              
     # Actual Cumulative (Blue Line)
     if len(pred_data.get('actual_dates', [])) > 0:
@@ -925,12 +963,21 @@ def plot_po_burnup(pred_data):
         fig.add_trace(go.Scatter(x=pred_data['forecast_dates'], y=pred_data['forecast_opt'], 
                                  mode='lines', name=f"Forecast (Opt: {pred_data['opt_daily_rate']:.0f}/d)", line=dict(color=PASTEL_COLORS['green'], dash='dot')))
                              
-    # Annotations - Fix applied using Unix Timestamp mapping for Plotly compatibility
-    if pd.notna(pred_data.get('due_date')):
-        due_ts = pd.to_datetime(pred_data['due_date']).timestamp() * 1000
-        fig.add_vline(x=due_ts, line_width=2, line_dash="dash", line_color="red", annotation_text="PO Due Date")
+    # Annotations - Loop through logistics records to print specific PO Due dates
+    if po_logistics_df is not None and not po_logistics_df.empty:
+        colors = px.colors.qualitative.Set1
+        for idx, row in po_logistics_df.iterrows():
+            if pd.notna(row['due_date']):
+                due_ts = pd.to_datetime(row['due_date']).timestamp() * 1000
+                po_num = row['po_number']
+                fig.add_vline(x=due_ts, line_width=1.5, line_dash="dash", line_color=colors[idx % len(colors)], annotation_text=f"{po_num} Due")
+    else:
+        # Fallback to general due date
+        if pd.notna(pred_data.get('due_date')):
+            due_ts = pd.to_datetime(pred_data['due_date']).timestamp() * 1000
+            fig.add_vline(x=due_ts, line_width=2, line_dash="dash", line_color="red", annotation_text="PO Due Date")
     
-    fig.add_hline(y=pred_data.get('total_qty', 0), line_width=2, line_dash="solid", line_color="purple", annotation_text="PO Total Qty")
+    fig.add_hline(y=pred_data.get('total_qty', 0), line_width=2, line_dash="solid", line_color="purple", annotation_text="Total Aggregated Qty")
     
     # Force the X-axis bounds to represent the exact same context duration as the periodic chart
     start_dt = pd.to_datetime(pred_data.get('start_date', pd.Timestamp.now()))
