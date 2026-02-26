@@ -427,47 +427,83 @@ def get_aggregated_data(df, freq_mode, config):
         
     return pd.DataFrame(rows)
 
-def generate_po_periodic_data(df_bar_view, subset_logistics, freq_mode, config, working_days_per_week, working_hours_per_day):
-    """Generates distinct periodic demand timelines for each selected PO."""
-    po_data_dict = {}
+def generate_po_periodic_data(df_bar_view, po_record, freq_mode, config, working_days_per_week, working_hours_per_day):
+    """Generates periodic aggregated data spanning the full PO timeline."""
+    start_date = po_record.get('start_date')
+    due_date = po_record.get('due_date')
+    if pd.isna(start_date) or pd.isna(due_date): return pd.DataFrame()
     
-    for _, row in subset_logistics.iterrows():
-        po_num = row['po_number']
-        start_date = pd.to_datetime(row['start_date'])
-        due_date = pd.to_datetime(row['due_date'])
-        total_qty = row.get('total_qty', 0)
+    start_date = pd.to_datetime(start_date)
+    due_date = pd.to_datetime(due_date)
+    total_qty = po_record.get('total_qty', 0)
+    
+    # Calculate uniform demand spread
+    total_calendar_days = max(1, (due_date - start_date).days)
+    total_weeks = total_calendar_days / 7.0
+    total_working_days = total_weeks * working_days_per_week
+    
+    daily_demand = total_qty / total_working_days if total_working_days > 0 else 0
+    weekly_demand = daily_demand * working_days_per_week
+    monthly_demand = weekly_demand * 4.33
+    
+    # Calculate Configured Max Capacity based on optimal cycle times
+    avg_ct = df_bar_view['approved_ct'].mean() if (not df_bar_view.empty and 'approved_ct' in df_bar_view.columns) else 1
+    if pd.isna(avg_ct) or avg_ct <= 0: avg_ct = 1
+    cav = df_bar_view['working_cavities'].max() if (not df_bar_view.empty and 'working_cavities' in df_bar_view.columns) else 1
+    
+    hourly_cap = (3600 / avg_ct) * cav
+    
+    # Process Actuals Data
+    agg_df = get_aggregated_data(df_bar_view, freq_mode, config)
+    
+    # Calculate timeline bounds to match the Burn-Up chart scope (Start -> Due or Late Finish)
+    current_cum = agg_df['Actual Output'].sum() if not agg_df.empty else 0
+    last_actual_date = pd.to_datetime(df_bar_view['shot_time'].max()).date() if not df_bar_view.empty else start_date.date()
+    
+    days_elapsed = max(1, (last_actual_date - start_date.date()).days + 1)
+    avg_daily_rate = current_cum / days_elapsed
+    
+    remaining_qty = total_qty - current_cum
+    max_proj_days = 0
+    if remaining_qty > 0 and avg_daily_rate > 0:
+        max_proj_days = min(int(remaining_qty / avg_daily_rate) + 1, 365) # cap prediction limits
         
-        if pd.isna(start_date) or pd.isna(due_date): continue
-        
-        # Calculate uniform demand spread for THIS specific PO
-        total_calendar_days = max(1, (due_date - start_date).days)
-        total_weeks = total_calendar_days / 7.0
-        total_working_days = total_weeks * working_days_per_week
-        
-        daily_demand = total_qty / total_working_days if total_working_days > 0 else 0
-        weekly_demand = daily_demand * working_days_per_week
-        monthly_demand = weekly_demand * 4.33
-        
-        end_timeline_date = due_date.date()
-        
-        # Generate continuous empty timeline matching the requirement of this PO
-        if freq_mode == 'Daily':
-            full_periods = pd.date_range(start=start_date.date(), end=end_timeline_date, freq='D').date
-            df_full = pd.DataFrame({'Period': full_periods})
-            df_full['Estimated Demand'] = daily_demand
-        elif freq_mode == 'Weekly':
-            full_periods = pd.period_range(start=start_date, end=end_timeline_date, freq='W').astype(str)
-            df_full = pd.DataFrame({'Period': full_periods})
-            df_full['Estimated Demand'] = weekly_demand
-        else: # Monthly
-            full_periods = pd.period_range(start=start_date, end=end_timeline_date, freq='M').astype(str)
-            df_full = pd.DataFrame({'Period': full_periods})
-            df_full['Estimated Demand'] = monthly_demand
+    projected_end_date = last_actual_date + timedelta(days=max_proj_days)
+    end_timeline_date = max(due_date.date(), projected_end_date)
+    
+    # Generate continuous empty timeline
+    if freq_mode == 'Daily':
+        full_periods = pd.date_range(start=start_date.date(), end=end_timeline_date, freq='D').date
+        df_full = pd.DataFrame({'Period': full_periods})
+        df_full['Estimated Demand'] = daily_demand
+        df_full['Configured Max Capacity'] = hourly_cap * working_hours_per_day
+        if not agg_df.empty: agg_df['Period'] = pd.to_datetime(agg_df['Period']).dt.date
+    elif freq_mode == 'Weekly':
+        full_periods = pd.period_range(start=start_date, end=end_timeline_date, freq='W').astype(str)
+        df_full = pd.DataFrame({'Period': full_periods})
+        df_full['Estimated Demand'] = weekly_demand
+        df_full['Configured Max Capacity'] = hourly_cap * working_hours_per_day * working_days_per_week
+    elif freq_mode == 'Monthly':
+        full_periods = pd.period_range(start=start_date, end=end_timeline_date, freq='M').astype(str)
+        df_full = pd.DataFrame({'Period': full_periods})
+        df_full['Estimated Demand'] = monthly_demand
+        df_full['Configured Max Capacity'] = hourly_cap * working_hours_per_day * working_days_per_week * 4.33
+    else:
+        df_full = pd.DataFrame()
 
+    # Merge full timeline with available actuals, filling gaps with zero
+    if not df_full.empty:
         df_full['Period'] = df_full['Period'].astype(str)
-        po_data_dict[po_num] = df_full
+        if not agg_df.empty:
+            agg_df['Period'] = agg_df['Period'].astype(str)
+            final_df = pd.merge(df_full, agg_df[['Period', 'Actual Output']], on='Period', how='left')
+            final_df['Actual Output'] = final_df['Actual Output'].fillna(0)
+        else:
+            final_df = df_full
+            final_df['Actual Output'] = 0
+        return final_df
         
-    return po_data_dict
+    return agg_df
 
 def generate_po_prediction_data(df_po_shots, po_record, config):
     """Generates time-series data specifically for PO Burn-up charting."""
@@ -838,21 +874,16 @@ def generate_mttr_mtbf_analysis(analysis_df):
 # --- PLOTTING FUNCTIONS ---
 # ==============================================================================
 
-def plot_po_periodic_chart(po_data_dict, df_raw, bar_freq, track_mode, chart_barmode="Grouped by PO (Cluster)"):
-    """Plots the periodic bar chart with matching target lines per PO."""
+def plot_po_periodic_chart(agg_po, df_raw, bar_freq):
+    """Plots the periodic bar chart with tools stacked per single PO."""
     fig = go.Figure()
     
-    if "Grouped" in chart_barmode:
-        breakdown_col = 'po_number' if 'Purchase Order' in track_mode else 'tool_id'
-    else:
-        breakdown_col = 'tool_id'
-        
+    breakdown_col = 'tool_id'
     if breakdown_col not in df_raw.columns:
-        breakdown_col = 'tool_id'
+        df_raw[breakdown_col] = 'Unknown'
         
     prod_df = df_raw[df_raw['stop_flag'] == 0].copy()
     colors = px.colors.qualitative.Pastel
-    color_mapping = {}
     
     if not prod_df.empty:
         if bar_freq == 'Daily':
@@ -867,35 +898,40 @@ def plot_po_periodic_chart(po_data_dict, df_raw, bar_freq, track_mode, chart_bar
         
         for i, segment in enumerate(unique_segments):
             seg_color = colors[i % len(colors)]
-            color_mapping[segment] = seg_color
-            
             seg_data = bar_data[bar_data[breakdown_col] == segment]
             fig.add_trace(go.Bar(
                 x=seg_data['Period'], y=seg_data['working_cavities'],
-                name=f'{segment} Output', marker_color=seg_color
+                name=f'Tool: {segment}', marker_color=seg_color
             ))
+    else:
+        fig.add_trace(go.Bar(
+            x=agg_po['Period'], y=agg_po['Actual Output'], 
+            name='Actual Output', marker_color=PASTEL_COLORS['blue']
+        ))
             
-    # Overlay Individual PO Demand Lines
-    for i, (po_num, df_demand) in enumerate(po_data_dict.items()):
-        line_color = color_mapping.get(po_num, colors[i % len(colors)])
-        
+    if 'Configured Max Capacity' in agg_po.columns:
         fig.add_trace(go.Scatter(
-            x=df_demand['Period'], y=df_demand['Estimated Demand'], 
-            name=f'{po_num} Demand Target', mode='lines', 
-            line=dict(color=line_color, dash='dash', width=2)
+            x=agg_po['Period'], y=agg_po['Configured Max Capacity'], 
+            name='Configured Max Capacity', mode='lines+markers', 
+            line=dict(color=PASTEL_COLORS['green'], dash='dot', width=2)
+        ))
+        
+    if 'Estimated Demand' in agg_po.columns:
+        fig.add_trace(go.Scatter(
+            x=agg_po['Period'], y=agg_po['Estimated Demand'], 
+            name='Estimated PO Demand', mode='lines+markers', 
+            line=dict(color=PASTEL_COLORS['red'], dash='dash', width=2)
         ))
     
-    barmode_type = 'group' if "Grouped" in chart_barmode else 'stack'
-    
     fig.update_layout(
-        title=f"Periodic Production vs Specific PO Demands ({bar_freq})",
-        barmode=barmode_type, hovermode="x unified", height=450,
+        title=f"Periodic Production vs Demand ({bar_freq})",
+        barmode='stack', hovermode="x unified", height=450,
         yaxis_title="Parts Output", xaxis_title="Period"
     )
     return fig
 
-def plot_po_burnup(pred_data, po_logistics_df=None):
-    """Plots the PO specific Burn-Up tracking chart with support for multiple PO Due Date annotations."""
+def plot_po_burnup(pred_data, po_record=None):
+    """Plots the specific PO Burn-Up tracking chart."""
     if not pred_data: return go.Figure()
     fig = go.Figure()
     
@@ -919,23 +955,12 @@ def plot_po_burnup(pred_data, po_logistics_df=None):
         fig.add_trace(go.Scatter(x=pred_data['forecast_dates'], y=pred_data['forecast_opt'], 
                                  mode='lines', name=f"Forecast (Opt: {pred_data['opt_daily_rate']:.0f}/d)", line=dict(color=PASTEL_COLORS['green'], dash='dot')))
                              
-    # Annotations - Loop through logistics records to print specific PO Due dates
-    if po_logistics_df is not None and not po_logistics_df.empty:
-        colors = px.colors.qualitative.Set1
-        for idx, row in po_logistics_df.iterrows():
-            if pd.notna(row['due_date']):
-                due_ts = pd.to_datetime(row['due_date']).timestamp() * 1000
-                po_num = row['po_number']
-                fig.add_vline(x=due_ts, line_width=1.5, line_dash="dash", line_color=colors[idx % len(colors)], annotation_text=f"{po_num} Due")
-    else:
-        # Fallback to general due date
-        if pd.notna(pred_data.get('due_date')):
-            due_ts = pd.to_datetime(pred_data['due_date']).timestamp() * 1000
-            fig.add_vline(x=due_ts, line_width=2, line_dash="dash", line_color="red", annotation_text="PO Due Date")
+    if pd.notna(pred_data.get('due_date')):
+        due_ts = pd.to_datetime(pred_data['due_date']).timestamp() * 1000
+        fig.add_vline(x=due_ts, line_width=2, line_dash="dash", line_color="red", annotation_text="PO Due Date")
     
-    fig.add_hline(y=pred_data.get('total_qty', 0), line_width=2, line_dash="solid", line_color="purple", annotation_text="Total Aggregated Qty")
+    fig.add_hline(y=pred_data.get('total_qty', 0), line_width=2, line_dash="solid", line_color="purple", annotation_text="Target Qty")
     
-    # Force the X-axis bounds to represent the exact same context duration as the periodic chart
     start_dt = pd.to_datetime(pred_data.get('start_date', pd.Timestamp.now()))
     max_dt_target = pd.to_datetime(pred_data['target_dates'][-1]) if len(pred_data.get('target_dates', [])) > 0 else start_dt
     max_dt_forecast = pd.to_datetime(pred_data['forecast_dates'][-1]) if len(pred_data.get('forecast_dates', [])) > 0 else max_dt_target
