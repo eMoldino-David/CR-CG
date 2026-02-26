@@ -298,6 +298,12 @@ def get_aggregated_data(df, freq_mode, config, breakdown_by_tool=False):
             'Fast Gain': res['capacity_gain_fast_parts'],
             'Total Loss': res['total_capacity_loss_parts'],
             'Run Time Sec': res['total_runtime_sec'],
+            'Downtime Sec': res['downtime_sec'],
+            'Production Time Sec': res['production_time_sec'],
+            'Total Capacity Loss Sec': res['total_capacity_loss_sec'],
+            'Run Time': format_seconds_to_dhm(res['total_runtime_sec']),
+            'Downtime': format_seconds_to_dhm(res['downtime_sec']),
+            'Production Time': format_seconds_to_dhm(res['production_time_sec']),
             'Normal Shots': res['normal_shots'],
             'Total Shots': res['total_shots']
         }
@@ -307,6 +313,7 @@ def get_aggregated_data(df, freq_mode, config, breakdown_by_tool=False):
     return pd.DataFrame(rows)
 
 def calculate_run_summaries(df_period, config):
+    """Calculates per-run metrics for the breakdown table."""
     summary_list = []
     if 'run_id' not in df_period.columns: return pd.DataFrame()
     for r_id, df_run in df_period.groupby('run_id'):
@@ -319,7 +326,10 @@ def calculate_run_summaries(df_period, config):
             'stop_events': res['stops'], 'mode_ct': df_run['mode_ct'].iloc[0],
             'mode_lower': df_run['mode_lower'].iloc[0], 'mode_upper': df_run['mode_upper'].iloc[0],
             'total_runtime_sec': res['total_runtime_sec'], 'production_time_sec': res['production_time_sec'],
-            'downtime_sec': res['downtime_sec'], 'optimal_output_parts': res['optimal_output_parts'],
+            'downtime_sec': res['downtime_sec'], 
+            'total_capacity_loss_sec': res['total_capacity_loss_sec'],
+            'optimal_output_parts': res['optimal_output_parts'],
+            'target_output_parts': res['target_output_parts'],
             'actual_output_parts': res['actual_output_parts'], 'total_capacity_loss_parts': res['total_capacity_loss_parts'],
             'capacity_loss_downtime_parts': res['capacity_loss_downtime_parts'],
             'capacity_loss_slow_parts': res['capacity_loss_slow_parts'],
