@@ -305,7 +305,8 @@ def get_aggregated_data(df, freq_mode, config, breakdown_by_tool=False):
             'Downtime': format_seconds_to_dhm(res['downtime_sec']),
             'Production Time': format_seconds_to_dhm(res['production_time_sec']),
             'Normal Shots': res['normal_shots'],
-            'Total Shots': res['total_shots']
+            'Total Shots': res['total_shots'],
+            'Downtime Shots': res['total_shots'] - res['normal_shots']
         }
         if breakdown_by_tool: row['tool_id'] = group_val[1]
         rows.append(row)
