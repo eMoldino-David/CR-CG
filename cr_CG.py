@@ -374,11 +374,15 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
         
         df_bar_view = df_po_shots if selected_tool_for_bar == "All Tracked Tools Combined" else df_po_shots[df_po_shots['tool_id'] == selected_tool_for_bar]
         
+        # Process the raw data to generate 'stop_flag' and other metrics needed for the chart
+        calc_for_chart = cr_CG_utils.CapacityRiskCalculator(df_bar_view, **config)
+        df_processed_for_chart = calc_for_chart.results.get('processed_df', df_bar_view)
+        
         agg_po = cr_CG_utils.generate_po_periodic_data(df_bar_view, composite_po_record, bar_freq, config, working_days_per_week, working_hours_per_day)
         
         if not agg_po.empty:
-            # Fixed disconnect: passed df_bar_view (raw data) and track_mode to match utils requirement
-            st.plotly_chart(cr_CG_utils.plot_po_periodic_chart(agg_po, df_bar_view, bar_freq, track_mode), use_container_width=True)
+            # Fixed disconnect: passed processed data and track_mode to match utils requirement
+            st.plotly_chart(cr_CG_utils.plot_po_periodic_chart(agg_po, df_processed_for_chart, bar_freq, track_mode), use_container_width=True)
         else:
             st.warning("No periodic data available.")
 
