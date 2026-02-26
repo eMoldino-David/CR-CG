@@ -377,7 +377,8 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
         agg_po = cr_CG_utils.generate_po_periodic_data(df_bar_view, composite_po_record, bar_freq, config, working_days_per_week, working_hours_per_day)
         
         if not agg_po.empty:
-            st.plotly_chart(cr_CG_utils.plot_po_periodic_chart(agg_po, bar_freq), use_container_width=True)
+            # Fixed disconnect: passed df_bar_view (raw data) and track_mode to match utils requirement
+            st.plotly_chart(cr_CG_utils.plot_po_periodic_chart(agg_po, df_bar_view, bar_freq, track_mode), use_container_width=True)
         else:
             st.warning("No periodic data available.")
 
@@ -387,7 +388,8 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
         st.markdown(f"### 2. Global Target Burn-Up ({track_mode})")
         pred_data = cr_CG_utils.generate_po_prediction_data(df_po_shots, composite_po_record, config)
         if pred_data:
-            st.plotly_chart(cr_CG_utils.plot_po_burnup(pred_data), use_container_width=True)
+            # Fixed disconnect: passed subset_logistics to handle multiple due date annotations
+            st.plotly_chart(cr_CG_utils.plot_po_burnup(pred_data, subset_logistics), use_container_width=True)
             
             # --- Forecast Analysis Insights ---
             current_cum = pred_data['current_cum']
@@ -1150,9 +1152,19 @@ def main():
         st.sidebar.warning("No tools found for this selection.")
         st.stop()
 
+    # --- ALIGNED TOOL SELECTION ---
     st.sidebar.markdown("### Tool Selection")
-    selected_tool = st.sidebar.selectbox("Select Tool ID (Dashboards)", tool_ids)
-    tool_name_display = selected_tool
+    
+    # NEW: Allow selecting 'All Tools' to take advantage of the updated run isolation logic in the Utils file
+    tool_options = ["All Tools Combined"] + tool_ids
+    selected_tool_option = st.sidebar.selectbox("Select Tool(s) (Dashboards)", tool_options)
+    
+    if selected_tool_option == "All Tools Combined":
+        df_tool = df_part
+        tool_name_display = "Multiple Tools (Rolled-Up)"
+    else:
+        df_tool = df_part[df_part['tool_id'].astype(str) == selected_tool_option]
+        tool_name_display = selected_tool_option
 
     with st.sidebar.expander("Configure Metrics"):
         tolerance = st.slider("Tolerance Band", 0.01, 0.50, 0.05, 0.01)
@@ -1172,8 +1184,6 @@ def main():
               'downtime_gap_tolerance': downtime_gap_tolerance, 'run_interval_hours': run_interval_hours, 
               'default_cavities': default_cavities, 'remove_maintenance': remove_maint}
     
-    df_tool = df_part[df_part['tool_id'].astype(str) == selected_tool]
-
     # --- TABS ---
     t_risk, t_opt, t_tgt, t_trend, t_fc = st.tabs(["Risk Tower", "Capacity (Optimal)", "Capacity (Target)", "Trends", "Forecast (PO Tracking)"])
     
