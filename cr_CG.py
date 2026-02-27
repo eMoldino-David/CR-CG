@@ -202,18 +202,13 @@ st.set_page_config(layout="wide", page_title="Capacity Risk Dashboard (v10.6)")
 def display_filter_context(ctx, tool_name=None):
     """Displays a clear banner indicating exactly what data is currently filtered and active."""
     if not ctx:
-        tool_str = f" | **Tool:** {tool_name}" if tool_name and tool_name != 'Multiple Tools (Rolled-Up)' else ""
-        st.info(f"🗂️ **Current Filter Scope:** All Data{tool_str}")
+        st.info(f"🗂️ **Current Filter Scope:** All Data | **Tool(s):** {tool_name}")
         return
         
     active_filters = [f"**{k}:** {v}" for k, v in ctx.items() if v != "All"]
-    if tool_name and tool_name != "Multiple Tools (Rolled-Up)":
-        active_filters.append(f"**Tool:** {tool_name}")
+    active_filters.append(f"**Tool(s):** {tool_name}")
         
-    if active_filters:
-        st.info("🗂️ **Current Filter Scope:** " + " | ".join(active_filters))
-    else:
-        st.info(f"🗂️ **Current Filter Scope:** All Global Data")
+    st.info("🗂️ **Current Filter Scope:** " + " | ".join(active_filters))
 
 def create_capsule(value, color_logic="neutral", suffix="", inverse=False):
     """
@@ -353,16 +348,17 @@ def render_risk_tower(df_tool, config):
         hide_index=True
     )
 
-def render_trends_tab(df_tool, config):
+def render_trends_tab(df_tool, config, key_prefix="global"):
     """Renders the Trends Tab."""
-    st.header("Historical Performance Trends")
-    st.info("Trends are calculated using the core engine matching the Optimal Capacity logic.")
+    if key_prefix == "global":
+        st.header("Historical Performance Trends")
+        st.info("Trends are calculated using the core engine matching the Optimal Capacity logic.")
 
     col_freq, col_mode, _ = st.columns([1, 1, 2])
     with col_freq:
-        trend_freq = st.selectbox("Select Trend Frequency", ["Daily", "Weekly", "Monthly"], key="cr_trend_freq")
+        trend_freq = st.selectbox("Select Trend Frequency", ["Daily", "Weekly", "Monthly"], key=f"cr_trend_freq_{key_prefix}")
     with col_mode:
-        trend_mode = st.selectbox("Dashboard Mode", ["Optimal", "Target"], key="cr_trend_mode")
+        trend_mode = st.selectbox("Dashboard Mode", ["Optimal", "Target"], key=f"cr_trend_mode_{key_prefix}")
 
     agg_df = cr_CG_utils.get_aggregated_data(df_tool, trend_freq, config)
     
@@ -412,7 +408,7 @@ def render_trends_tab(df_tool, config):
     st.subheader("Visual Trend")
     metric_to_plot = st.selectbox("Select Metric to Visualize", 
                                   ['Actual Output', 'Optimal Output', 'Target Output', 'Total Loss', 'Total Run Duration', 'Run Rate Downtime'],
-                                  key="cr_trend_viz_select")
+                                  key=f"cr_trend_viz_select_{key_prefix}")
     
     if metric_to_plot in agg_df.columns:
         fig = px.line(agg_df, x='Period', y=metric_to_plot, markers=True, title=f"{metric_to_plot} Trend")
@@ -425,13 +421,14 @@ def render_trends_tab(df_tool, config):
             if metric_to_plot != "Optimal Output" and "Optimal Output" in agg_df.columns:
                  fig.add_trace(go.Scatter(x=agg_df['Period'], y=agg_df['Optimal Output'], mode='lines', name='Optimal Output', line=dict(color='orange', width=1, dash='dash')))
         
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=f"trend_chart_{key_prefix}")
     else:
         st.warning(f"Metric {metric_to_plot} not found in data.")
 
-def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, working_hours_per_day):
+def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, working_hours_per_day, key_prefix="global"):
     """Renders the PO Forecast & Burn-up Tab using dynamically filtered metrics."""
-    st.header("Logistics Plan Tracking & Forecast")
+    if key_prefix == "global":
+        st.header("Logistics Plan Tracking & Forecast")
     
     # Check if we have PO data mapping in the filtered data
     has_po_in_shots = 'po_number' in df_tool.columns and not df_tool['po_number'].replace("Unknown", pd.NA).isna().all()
@@ -446,25 +443,25 @@ def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, wo
             
         # --- Advanced Tracking Configuration ---
         st.markdown("### ⚙️ Tracking Configuration")
-        track_mode = st.radio("Group & Track Progress By:", ["Purchase Order(s)", "Supplier(s)", "Plant(s)"], horizontal=True)
+        track_mode = st.radio("Group & Track Progress By:", ["Purchase Order(s)", "Supplier(s)", "Plant(s)"], horizontal=True, key=f"track_mode_{key_prefix}")
         
         selected_po_list = []
         
         if track_mode == "Purchase Order(s)":
-            selected_pos = st.multiselect("Select Purchase Order(s) to Track", avail_pos, default=avail_pos[:1])
+            selected_pos = st.multiselect("Select Purchase Order(s) to Track", avail_pos, default=avail_pos[:1], key=f"po_track_{key_prefix}")
             selected_po_list = selected_pos
             
         elif track_mode == "Supplier(s)":
             avail_sups = [s for s in df_tool['supplier_id'].unique() if str(s).lower() not in ['unknown', 'nan']]
             if not avail_sups: st.warning("No identified Supplier data in scope."); return
-            selected_sups = st.multiselect("Select Supplier(s) to Track", avail_sups, default=avail_sups)
+            selected_sups = st.multiselect("Select Supplier(s) to Track", avail_sups, default=avail_sups, key=f"sup_track_{key_prefix}")
             linked_pos = df_tool[df_tool['supplier_id'].isin(selected_sups)]['po_number'].unique()
             selected_po_list = [po for po in linked_pos if po in avail_pos]
             
         elif track_mode == "Plant(s)":
             avail_plts = [p for p in df_tool['plant_id'].unique() if str(p).lower() not in ['unknown', 'nan']]
             if not avail_plts: st.warning("No identified Plant data in scope."); return
-            selected_plts = st.multiselect("Select Plant(s) to Track", avail_plts, default=avail_plts)
+            selected_plts = st.multiselect("Select Plant(s) to Track", avail_plts, default=avail_plts, key=f"plt_track_{key_prefix}")
             linked_pos = df_tool[df_tool['plant_id'].isin(selected_plts)]['po_number'].unique()
             selected_po_list = [po for po in linked_pos if po in avail_pos]
             
@@ -513,9 +510,9 @@ def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, wo
         
         col_po, col_freq = st.columns([2, 1])
         with col_po:
-            selected_graph_po = st.selectbox("Select Purchase Order for Visualization:", selected_po_list)
+            selected_graph_po = st.selectbox("Select Purchase Order for Visualization:", selected_po_list, key=f"viz_po_{key_prefix}")
         with col_freq:
-            bar_freq = st.selectbox("Select Frequency Spread", ["Weekly", "Monthly", "Daily"], index=0)
+            bar_freq = st.selectbox("Select Frequency Spread", ["Weekly", "Monthly", "Daily"], index=0, key=f"bar_freq_{key_prefix}")
             
         po_record = subset_logistics[subset_logistics['po_number'] == selected_graph_po].iloc[0].to_dict()
         df_single_po_shots = df_po_shots[df_po_shots['po_number'] == selected_graph_po].copy()
@@ -529,7 +526,7 @@ def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, wo
         st.markdown(f"#### 1. Periodic Production vs Estimated Demand ({selected_graph_po})")
         
         if not agg_po.empty:
-            st.plotly_chart(cr_CG_utils.plot_po_periodic_chart(agg_po, df_processed_for_chart, bar_freq, track_mode), use_container_width=True)
+            st.plotly_chart(cr_CG_utils.plot_po_periodic_chart(agg_po, df_processed_for_chart, bar_freq, track_mode), use_container_width=True, key=f"periodic_chart_{key_prefix}")
         else:
             st.warning("No periodic data available.")
 
@@ -539,7 +536,7 @@ def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, wo
         st.markdown(f"### 2. Global Target Burn-Up ({track_mode})")
         pred_data = cr_CG_utils.generate_po_prediction_data(df_po_shots, composite_po_record, config)
         if pred_data:
-            st.plotly_chart(cr_CG_utils.plot_po_burnup(pred_data, subset_logistics), use_container_width=True)
+            st.plotly_chart(cr_CG_utils.plot_po_burnup(pred_data, subset_logistics), use_container_width=True, key=f"burnup_chart_{key_prefix}")
             
             # --- Forecast Analysis Insights ---
             current_cum = pred_data['current_cum']
@@ -642,9 +639,9 @@ def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, wo
                 st.markdown("#### Forecast Settings")
                 data_min = pd.to_datetime(agg_daily['Period']).min().date()
                 data_max = pd.to_datetime(agg_daily['Period']).max().date()
-                hist_start_date = st.date_input("History From Date", data_min, min_value=data_min, max_value=data_max, key="fc_hist_start")
-                tgt_date = st.date_input("Target Date", data_max + timedelta(days=30), min_value=data_max, key="fc_date")
-                dem_goal = st.number_input("Demand Goal (Total Parts)", 0, step=1000, key="fc_goal")
+                hist_start_date = st.date_input("History From Date", data_min, min_value=data_min, max_value=data_max, key=f"fc_hist_start_{key_prefix}")
+                tgt_date = st.date_input("Target Date", data_max + timedelta(days=30), min_value=data_max, key=f"fc_date_{key_prefix}")
+                dem_goal = st.number_input("Demand Goal (Total Parts)", 0, step=1000, key=f"fc_goal_{key_prefix}")
                 
         agg_filtered = agg_daily[pd.to_datetime(agg_daily['Period']).dt.date >= hist_start_date]
         if agg_filtered.empty:
@@ -655,7 +652,7 @@ def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, wo
             pred = cr_CG_utils.generate_prediction_data(agg_filtered, data_max, tgt_date, dem_goal)
             fig = cr_CG_utils.plot_prediction_chart(pred, dem_goal)
             fig.update_layout(title="Future Capacity Projection")
-            st.plotly_chart(fig, use_container_width=True, key="fc_chart")
+            st.plotly_chart(fig, use_container_width=True, key=f"fc_chart_{key_prefix}")
             
             if dem_goal > 0 and pred:
                 current_cum = pred['historic_cum'].iloc[-1]
@@ -679,14 +676,15 @@ def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, wo
                 """, unsafe_allow_html=True)
 
 
-def render_dashboard(df_tool, config, dashboard_mode="Optimal"):
+def render_dashboard(df_tool, config, dashboard_mode="Optimal", key_prefix="global"):
     """
     Renders the Main Capacity Dashboard.
     """
-    st.header(f"Capacity Dashboard ({dashboard_mode})")
+    if key_prefix == "global":
+        st.header(f"Capacity Dashboard ({dashboard_mode})")
     
     benchmark_mode = "Optimal Output" if dashboard_mode == "Optimal" else "Target Output"
-    key_suffix = f"_{dashboard_mode.lower()}"
+    key_suffix = f"_{dashboard_mode.lower()}_{key_prefix}"
 
     # --- Controls ---
     c1, c2 = st.columns([2, 1])
@@ -1304,19 +1302,23 @@ def main():
         st.sidebar.warning("No tools found for this selection.")
         st.stop()
 
-    # --- ALIGNED TOOL SELECTION ---
+    # --- ALIGNED MULTI-TOOL SELECTION ---
     st.sidebar.markdown("### Tool Selection")
     
-    # NEW: Allow selecting 'All Tools' to take advantage of the updated run isolation logic in the Utils file
-    tool_options = ["All Tools Combined"] + tool_ids
-    selected_tool_option = st.sidebar.selectbox("Select Tool(s) (Dashboards)", tool_options)
+    selected_tools = st.sidebar.multiselect("Select Tool(s) to Analyze", tool_ids, default=tool_ids)
     
-    if selected_tool_option == "All Tools Combined":
-        df_tool = df_part
-        tool_name_display = "Multiple Tools (Rolled-Up)"
+    if not selected_tools:
+        st.sidebar.warning("Please select at least one tool to proceed.")
+        st.stop()
+
+    df_tool = df_part[df_part['tool_id'].astype(str).isin(selected_tools)]
+    
+    if len(selected_tools) > 1:
+        view_mode = st.sidebar.radio("Multi-Tool View Mode", ["Rolled-Up (Combined)", "Compare Side-by-Side"])
+        tool_name_display = f"Multiple Tools ({len(selected_tools)} Toolings: {', '.join(selected_tools)})"
     else:
-        df_tool = df_part[df_part['tool_id'].astype(str) == selected_tool_option]
-        tool_name_display = selected_tool_option
+        view_mode = "Rolled-Up (Combined)"
+        tool_name_display = selected_tools[0]
 
     with st.sidebar.expander("Configure Metrics"):
         tolerance = st.slider("Tolerance Band", 0.01, 0.50, 0.05, 0.01)
@@ -1344,11 +1346,60 @@ def main():
     # --- TABS ---
     t_risk, t_opt, t_tgt, t_trend, t_fc = st.tabs(["Risk Tower", "Capacity (Optimal)", "Capacity (Target)", "Trends", "Forecast (PO Tracking)"])
     
-    with t_risk: render_risk_tower(df_tool, config)
-    with t_opt: render_dashboard(df_tool, config, "Optimal") if not df_tool.empty else st.warning("No data.")
-    with t_tgt: render_dashboard(df_tool, config, "Target") if not df_tool.empty else st.warning("No data.")
-    with t_trend: render_trends_tab(df_tool, config) if not df_tool.empty else st.warning("No data.")
-    with t_fc: render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, working_hours_per_day) if not df_tool.empty else st.warning("No data.")
+    with t_risk: 
+        render_risk_tower(df_tool, config)
+        
+    with t_opt: 
+        if view_mode == "Compare Side-by-Side":
+            cols = st.columns(len(selected_tools))
+            for i, t_id in enumerate(selected_tools):
+                with cols[i]:
+                    st.markdown(f"<h3 style='text-align: center; color: deepskyblue;'>Tool: {t_id}</h3>", unsafe_allow_html=True)
+                    t_df = df_tool[df_tool['tool_id'].astype(str) == t_id]
+                    if not t_df.empty: render_dashboard(t_df, config, "Optimal", key_prefix=t_id)
+                    else: st.warning(f"No data for {t_id}")
+        else:
+            if not df_tool.empty: render_dashboard(df_tool, config, "Optimal", key_prefix="global")
+            else: st.warning("No data.")
+            
+    with t_tgt: 
+        if view_mode == "Compare Side-by-Side":
+            cols = st.columns(len(selected_tools))
+            for i, t_id in enumerate(selected_tools):
+                with cols[i]:
+                    st.markdown(f"<h3 style='text-align: center; color: deepskyblue;'>Tool: {t_id}</h3>", unsafe_allow_html=True)
+                    t_df = df_tool[df_tool['tool_id'].astype(str) == t_id]
+                    if not t_df.empty: render_dashboard(t_df, config, "Target", key_prefix=t_id)
+                    else: st.warning(f"No data for {t_id}")
+        else:
+            if not df_tool.empty: render_dashboard(df_tool, config, "Target", key_prefix="global")
+            else: st.warning("No data.")
+            
+    with t_trend: 
+        if view_mode == "Compare Side-by-Side":
+            cols = st.columns(len(selected_tools))
+            for i, t_id in enumerate(selected_tools):
+                with cols[i]:
+                    st.markdown(f"<h3 style='text-align: center; color: deepskyblue;'>Tool: {t_id}</h3>", unsafe_allow_html=True)
+                    t_df = df_tool[df_tool['tool_id'].astype(str) == t_id]
+                    if not t_df.empty: render_trends_tab(t_df, config, key_prefix=t_id)
+                    else: st.warning(f"No data for {t_id}")
+        else:
+            if not df_tool.empty: render_trends_tab(df_tool, config, key_prefix="global")
+            else: st.warning("No data.")
+            
+    with t_fc: 
+        if view_mode == "Compare Side-by-Side":
+            cols = st.columns(len(selected_tools))
+            for i, t_id in enumerate(selected_tools):
+                with cols[i]:
+                    st.markdown(f"<h3 style='text-align: center; color: deepskyblue;'>Tool: {t_id}</h3>", unsafe_allow_html=True)
+                    t_df = df_tool[df_tool['tool_id'].astype(str) == t_id]
+                    if not t_df.empty: render_forecast_tab(t_df, config, df_logistics, working_days_per_week, working_hours_per_day, key_prefix=t_id)
+                    else: st.warning(f"No data for {t_id}")
+        else:
+            if not df_tool.empty: render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, working_hours_per_day, key_prefix="global")
+            else: st.warning("No data.")
 
 if __name__ == "__main__":
     main()
