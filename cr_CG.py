@@ -322,9 +322,31 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
             st.warning(f"No Purchase Orders are associated with your current {track_mode} selection. Please select at least one item.")
             return
             
+<<<<<<< HEAD
         subset_logistics = df_logistics[df_logistics['po_number'].isin(selected_po_list)]
         df_po_shots = df_scope[df_scope['po_number'].isin(selected_po_list)].copy()
         
+=======
+        # Aggregate the Logistics PO records safely into a composite
+        subset_logistics = df_logistics[df_logistics['po_number'].isin(selected_po_list)]
+        df_po_shots = df_scope[df_scope['po_number'].isin(selected_po_list)].copy()
+        
+        total_qty = pd.to_numeric(subset_logistics['total_qty'], errors='coerce').sum()
+        min_start = pd.to_datetime(subset_logistics['start_date']).min()
+        max_due = pd.to_datetime(subset_logistics['due_date']).max()
+        
+        po_display_name = ", ".join(selected_po_list) if len(selected_po_list) <= 3 else f"{len(selected_po_list)} POs Selected"
+        proj_display = ", ".join(subset_logistics['project_id'].astype(str).unique())
+        part_display = ", ".join(subset_logistics['part_id'].astype(str).unique())
+        
+        composite_po_record = {
+            'po_number': po_display_name,
+            'total_qty': total_qty,
+            'start_date': min_start,
+            'due_date': max_due
+        }
+        
+>>>>>>> parent of 78d96fb (v2.9)
         # --- PO Summary Box ---
         st.markdown("### 📋 Selected Purchase Orders Summary")
         
@@ -361,23 +383,39 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
         calc_for_chart = cr_CG_utils.CapacityRiskCalculator(df_single_po_shots, **config)
         df_processed_for_chart = calc_for_chart.results.get('processed_df', df_single_po_shots)
         
+<<<<<<< HEAD
         agg_po = cr_CG_utils.generate_po_periodic_data(df_single_po_shots, po_record, bar_freq, config, working_days_per_week, working_hours_per_day)
         
         st.markdown(f"#### 1. Periodic Production vs Estimated Demand ({selected_graph_po})")
         
         if not agg_po.empty:
             st.plotly_chart(cr_CG_utils.plot_po_periodic_chart(agg_po, df_processed_for_chart, bar_freq), use_container_width=True)
+=======
+        agg_po = cr_CG_utils.generate_po_periodic_data(df_bar_view, composite_po_record, bar_freq, config, working_days_per_week, working_hours_per_day)
+        
+        if not agg_po.empty:
+            # Fixed disconnect: passed processed data and track_mode to match utils requirement
+            st.plotly_chart(cr_CG_utils.plot_po_periodic_chart(agg_po, df_processed_for_chart, bar_freq, track_mode, chart_barmode), use_container_width=True)
+>>>>>>> parent of 78d96fb (v2.9)
         else:
             st.warning("No periodic data available.")
 
         st.markdown("---")
         
         # --- GRAPH 2: Burn Up Chart ---
+<<<<<<< HEAD
         st.markdown(f"#### 2. Target Burn-Up ({selected_graph_po})")
         
         pred_data = cr_CG_utils.generate_po_prediction_data(df_single_po_shots, po_record, config)
         if pred_data:
             st.plotly_chart(cr_CG_utils.plot_po_burnup(pred_data, po_record), use_container_width=True)
+=======
+        st.markdown(f"### 2. Global Target Burn-Up ({track_mode})")
+        pred_data = cr_CG_utils.generate_po_prediction_data(df_po_shots, composite_po_record, config)
+        if pred_data:
+            # Fixed disconnect: passed subset_logistics to handle multiple due date annotations
+            st.plotly_chart(cr_CG_utils.plot_po_burnup(pred_data, subset_logistics), use_container_width=True)
+>>>>>>> parent of 78d96fb (v2.9)
             
             # --- Forecast Analysis Insights ---
             current_cum = pred_data['current_cum']
@@ -387,7 +425,11 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
             due_date = pred_data['due_date']
             
             if current_cum >= target_qty:
+<<<<<<< HEAD
                 st.success(f"🎉 **Target Fulfilled!** Current output ({current_cum:,.0f}) has met or exceeded the order quantity for {selected_graph_po} ({target_qty:,.0f}).")
+=======
+                st.success(f"🎉 **Target Fulfilled!** Current output ({current_cum:,.0f}) has met or exceeded the aggregated quantity ({target_qty:,.0f}).")
+>>>>>>> parent of 78d96fb (v2.9)
             else:
                 remaining = target_qty - current_cum
                 days_avg = remaining / avg_rate if avg_rate > 0 else 9999
@@ -398,7 +440,11 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
                 if len(actual_dates) > 0:
                     last_act_date = actual_dates.iloc[-1] if hasattr(actual_dates, 'iloc') else actual_dates[-1]
                 else:
+<<<<<<< HEAD
                     last_act_date = po_record['start_date'].date() if isinstance(po_record['start_date'], pd.Timestamp) else pd.to_datetime(po_record['start_date']).date()
+=======
+                    last_act_date = min_start.date()
+>>>>>>> parent of 78d96fb (v2.9)
                 
                 finish_avg = last_act_date + timedelta(days=int(days_avg))
                 finish_opt = last_act_date + timedelta(days=int(days_opt))
@@ -408,7 +454,11 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
                 
                 analysis_html = f"""
                 <div style="background-color: #262730; padding: 15px; border-radius: 5px; border: 1px solid #41424C; margin-bottom: 20px;">
+<<<<<<< HEAD
                     <h4 style="margin-top:0;">Forecast Analysis for {selected_graph_po}</h4>
+=======
+                    <h4 style="margin-top:0;">Forecast Analysis</h4>
+>>>>>>> parent of 78d96fb (v2.9)
                     <ul>
                         <li><strong>Status:</strong> <span style="color:{status_color}; font-weight:bold;">{status_text}</span> to meet demand by {due_date.strftime('%Y-%m-%d')}.</li>
                         <li>To meet demand of <strong>{target_qty:,.0f}</strong>, you need <strong>{remaining:,.0f}</strong> more parts.</li>
@@ -419,7 +469,11 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
                 """
                 st.markdown(analysis_html, unsafe_allow_html=True)
         else:
+<<<<<<< HEAD
             st.warning(f"Not enough production data to generate burn-up for {selected_graph_po}.")
+=======
+            st.warning("Not enough production data to generate burn-up.")
+>>>>>>> parent of 78d96fb (v2.9)
             
         # --- Breakdown per Tooling Table ---
         st.markdown("### Breakdown per Active Tooling")

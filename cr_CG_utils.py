@@ -490,11 +490,20 @@ def generate_po_periodic_data(df_bar_view, po_record, freq_mode, config, working
     
     start_date = pd.to_datetime(start_date)
     due_date = pd.to_datetime(due_date)
+<<<<<<< HEAD
 >>>>>>> parent of a9a6cf3 (Update cr_CG_utils.py)
     total_qty = po_record.get('total_qty', 0)
     
     # Calculate uniform demand spread
     total_calendar_days = max(1, (due_date - start_date).days)
+=======
+    total_qty = po_record.get('total_qty', 0)
+    
+    # Calculate uniform demand spread
+    total_calendar_days = (due_date - start_date).days
+    if total_calendar_days <= 0: total_calendar_days = 1
+    
+>>>>>>> parent of 78d96fb (v2.9)
     total_weeks = total_calendar_days / 7.0
     total_working_days = total_weeks * working_days_per_week
     
@@ -516,13 +525,23 @@ def generate_po_periodic_data(df_bar_view, po_record, freq_mode, config, working
     current_cum = agg_df['Actual Output'].sum() if not agg_df.empty else 0
     last_actual_date = pd.to_datetime(df_bar_view['shot_time'].max()).date() if not df_bar_view.empty else start_date.date()
     
+<<<<<<< HEAD
     days_elapsed = max(1, (last_actual_date - start_date.date()).days + 1)
+=======
+    days_elapsed = (last_actual_date - start_date.date()).days + 1
+    if days_elapsed <= 0: days_elapsed = 1
+>>>>>>> parent of 78d96fb (v2.9)
     avg_daily_rate = current_cum / days_elapsed
     
     remaining_qty = total_qty - current_cum
     max_proj_days = 0
     if remaining_qty > 0 and avg_daily_rate > 0:
+<<<<<<< HEAD
         max_proj_days = min(int(remaining_qty / avg_daily_rate) + 1, 365) # cap prediction limits
+=======
+        max_proj_days = int(remaining_qty / avg_daily_rate) + 1
+        max_proj_days = min(max_proj_days, 365) # cap prediction limits
+>>>>>>> parent of 78d96fb (v2.9)
         
     projected_end_date = last_actual_date + timedelta(days=max_proj_days)
     end_timeline_date = max(due_date.date(), projected_end_date)
@@ -930,6 +949,7 @@ def generate_mttr_mtbf_analysis(analysis_df):
 # --- PLOTTING FUNCTIONS ---
 # ==============================================================================
 
+<<<<<<< HEAD
 def plot_po_periodic_chart(agg_po, df_raw, bar_freq):
     """Plots the periodic bar chart with tools stacked per single PO."""
     fig = go.Figure()
@@ -940,19 +960,41 @@ def plot_po_periodic_chart(agg_po, df_raw, bar_freq):
         
     prod_df = df_raw[df_raw['stop_flag'] == 0].copy()
     colors = px.colors.qualitative.Pastel
+=======
+def plot_po_periodic_chart(agg_po, df_raw, bar_freq, track_mode, chart_barmode="Stacked by Tooling"):
+    """Plots the periodic stacked bar chart for PO tracking vs Demand & Configured Capacity."""
+    fig = go.Figure()
+    
+    # Determine what to stack the bars by based on what makes sense for the view mode
+    if "Grouped" in chart_barmode:
+        breakdown_col = 'po_number' if 'Purchase Order' in track_mode else 'tool_id'
+    else:
+        breakdown_col = 'tool_id'
+        
+    if breakdown_col not in df_raw.columns:
+        breakdown_col = 'tool_id' # Safe fallback
+        
+    prod_df = df_raw[df_raw['stop_flag'] == 0].copy()
+>>>>>>> parent of 78d96fb (v2.9)
     
     if not prod_df.empty:
+        # Assign accurate period bounds based on the frequency selected
         if bar_freq == 'Daily':
             prod_df['Period'] = prod_df['shot_time'].dt.date.astype(str)
         elif bar_freq == 'Weekly':
             prod_df['Period'] = prod_df['shot_time'].dt.to_period('W').astype(str)
-        else:
+        elif bar_freq == 'Monthly':
             prod_df['Period'] = prod_df['shot_time'].dt.to_period('M').astype(str)
+        else:
+            prod_df['Period'] = prod_df['shot_time'].dt.date.astype(str)
             
         bar_data = prod_df.groupby(['Period', breakdown_col])['working_cavities'].sum().reset_index()
+        
         unique_segments = bar_data[breakdown_col].unique()
+        colors = px.colors.qualitative.Pastel
         
         for i, segment in enumerate(unique_segments):
+<<<<<<< HEAD
             seg_color = colors[i % len(colors)]
             seg_data = bar_data[bar_data[breakdown_col] == segment]
             fig.add_trace(go.Bar(
@@ -983,6 +1025,38 @@ def plot_po_periodic_chart(agg_po, df_raw, bar_freq):
     fig.update_layout(
         title=f"Periodic Production vs Demand ({bar_freq})",
         barmode='stack', hovermode="x unified", height=450,
+=======
+            seg_data = bar_data[bar_data[breakdown_col] == segment]
+            fig.add_trace(go.Bar(
+                x=seg_data['Period'], y=seg_data['working_cavities'],
+                name=f'{segment}', marker_color=colors[i % len(colors)]
+            ))
+    else:
+        # Safe fallback if raw data aggregation fails
+        fig.add_trace(go.Bar(
+            x=agg_po['Period'], y=agg_po['Actual Output'], 
+            name='Actual Output', marker_color=PASTEL_COLORS['blue']
+        ))
+    
+    # Overlay lines
+    fig.add_trace(go.Scatter(
+        x=agg_po['Period'], y=agg_po['Configured Max Capacity'], 
+        name='Configured Max Capacity', mode='lines+markers', 
+        line=dict(color=PASTEL_COLORS['green'], dash='dot', width=2)
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=agg_po['Period'], y=agg_po['Estimated Demand'], 
+        name='Estimated PO Demand', mode='lines+markers', 
+        line=dict(color=PASTEL_COLORS['red'], dash='dash', width=2)
+    ))
+    
+    barmode_type = 'group' if "Grouped" in chart_barmode else 'stack'
+    
+    fig.update_layout(
+        title=f"Periodic Production vs Demand ({bar_freq})",
+        barmode=barmode_type, hovermode="x unified", height=450,
+>>>>>>> parent of 78d96fb (v2.9)
         yaxis_title="Parts Output", xaxis_title="Period"
     )
     return fig
