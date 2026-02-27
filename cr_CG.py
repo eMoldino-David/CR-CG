@@ -13,9 +13,86 @@ importlib.reload(cr_CG_utils)
 # ==============================================================================
 # --- EXACT ALIGNMENT MONKEYPATCH ---
 # ==============================================================================
-# By intercepting get_aggregated_data here, we guarantee that the Forecast, 
-# Trends, and Risk Tower tabs use the exact same 2-pass slicing logic that the 
-# Capacity (Optimal) tab uses. This fixes the aggregation logic discrepancy.
+# This ensures that ALL tabs (Forecast, Trends, Capacity) draw from a single, 
+# unified global processing pass, eliminating boundary/slice discrepancies.
+
+def aligned_calculate_run_summaries(df_period, config):
+    summary_list = []
+    if 'run_id' not in df_period.columns: return pd.DataFrame()
+    
+    # If not globally processed, process it now (safety fallback)
+    if 'stop_flag' not in df_period.columns:
+        calc = cr_CG_utils.CapacityRiskCalculator(df_period, **config)
+        df_period = calc.results.get('processed_df', df_period)
+        
+    for r_id, df_run in df_period.groupby('run_id'):
+        if df_run.empty: continue
+        
+        start = df_run['shot_time'].min()
+        end = df_run['shot_time'].max()
+        last_ct = df_run.iloc[-1]['actual_ct']
+        duration = (end - start).total_seconds() + last_ct
+        
+        r_ct = df_run['approved_ct_for_run'].iloc[0] if 'approved_ct_for_run' in df_run else df_run['approved_ct'].iloc[0]
+        r_cav = df_run['working_cavities'].max()
+        opt_parts = (duration / r_ct) * r_cav
+        
+        total_runtime = duration
+        
+        prod_df = df_run[df_run['stop_flag'] == 0]
+        prod_time = prod_df['actual_ct'].sum()
+        downtime = max(0, total_runtime - prod_time)
+        
+        act_output = prod_df['working_cavities'].sum()
+        tgt_output = opt_parts * (config['target_output_perc'] / 100.0)
+        
+        cap_gain_fast = 0
+        cap_loss_slow = 0
+        if not prod_df.empty:
+            parts_delta = ((prod_df['approved_ct_for_run'] - prod_df['actual_ct']) / prod_df['approved_ct_for_run']) * prod_df['working_cavities']
+            cap_gain_fast = parts_delta[parts_delta > 0].sum()
+            cap_loss_slow = abs(parts_delta[parts_delta < 0].sum())
+            
+        net_cycle_loss = cap_loss_slow - cap_gain_fast
+        true_loss = opt_parts - act_output
+        loss_dt = true_loss - net_cycle_loss
+        
+        stops = df_run['stop_event'].sum()
+        total_shots = len(df_run)
+        normal_shots = len(prod_df)
+        
+        summary_list.append({
+            'run_id': r_id,
+            'tool_ids': ', '.join(df_run['tool_id'].astype(str).unique()) if 'tool_id' in df_run.columns else 'Unknown',
+            'start_time': start,
+            'end_time': end,
+            'total_shots': total_shots,
+            'normal_shots': normal_shots,
+            'stop_events': stops,
+            'stopped_shots': total_shots - normal_shots,
+            'mode_ct': df_run['mode_ct'].iloc[0] if 'mode_ct' in df_run else 0,
+            'mode_lower': df_run['mode_lower'].iloc[0] if 'mode_lower' in df_run else 0,
+            'mode_upper': df_run['mode_upper'].iloc[0] if 'mode_upper' in df_run else 0,
+            'total_runtime_sec': total_runtime,
+            'production_time_sec': prod_time,
+            'downtime_sec': downtime,
+            'total_capacity_loss_sec': downtime + cap_loss_slow, 
+            'optimal_output_parts': opt_parts,
+            'target_output_parts': tgt_output,
+            'actual_output_parts': act_output,
+            'capacity_loss_downtime_parts': loss_dt,
+            'capacity_loss_slow_parts': cap_loss_slow,
+            'capacity_gain_fast_parts': cap_gain_fast,
+            'total_capacity_loss_parts': true_loss,
+            'mttr_min': (downtime / 60 / stops) if stops > 0 else 0, 
+            'stability_index': (prod_time / total_runtime * 100) if total_runtime > 0 else 100.0 
+        })
+        
+    if not summary_list: return pd.DataFrame()
+    df_summary = pd.DataFrame(summary_list).sort_values('start_time')
+    df_summary['display_run_id'] = range(1, len(df_summary) + 1)
+    return df_summary
+
 def aligned_get_aggregated_data(df, freq_mode, config):
     base_calc = cr_CG_utils.CapacityRiskCalculator(df, **config)
     df_processed = base_calc.results.get('processed_df', pd.DataFrame())
@@ -36,7 +113,7 @@ def aligned_get_aggregated_data(df, freq_mode, config):
 
     agg_rows = []
     for period, df_period in df_processed.groupby('Period_Lbl'):
-        run_breakdown_df = cr_CG_utils.calculate_run_summaries(df_period, config)
+        run_breakdown_df = aligned_calculate_run_summaries(df_period, config)
         if run_breakdown_df.empty: continue
         
         total_runtime = run_breakdown_df['total_runtime_sec'].sum()
@@ -84,7 +161,8 @@ def aligned_get_aggregated_data(df, freq_mode, config):
     if not agg_rows: return pd.DataFrame()
     return pd.DataFrame(agg_rows).sort_values('Period')
 
-# Override utility function
+# Override BOTH utility functions to ensure complete logical harmony
+cr_CG_utils.calculate_run_summaries = aligned_calculate_run_summaries
 cr_CG_utils.get_aggregated_data = aligned_get_aggregated_data
 
 # ==============================================================================
