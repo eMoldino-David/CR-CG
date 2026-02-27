@@ -176,9 +176,144 @@ def aligned_get_aggregated_data(df, freq_mode, config):
     if not agg_rows: return pd.DataFrame()
     return pd.DataFrame(agg_rows).sort_values('Period')
 
-# Override BOTH utility functions to ensure complete logical harmony
+# ==============================================================================
+# --- LIGHT/DARK MODE VISIBILITY OVERRIDES ---
+# ==============================================================================
+# Intercepting charting utilities to strip hardcoded white/grey colors and replace
+# them with inherit opacity constraints. This ensures Plotly perfectly adapts to 
+# Streamlit's light mode and dark mode natively.
+
+def aligned_create_time_breakdown_donut(total_sec, prod_sec, down_sec):
+    c_prod = cr_CG_utils.PASTEL_COLORS['green']
+    c_down = cr_CG_utils.PASTEL_COLORS['red']
+    
+    # Removed hardcoded white text colors. Using opacity so the text color seamlessly matches the theme mode.
+    center_text = f"<span style='font-size:18px; opacity:0.6;'>Total Run Duration</span><br><br><span style='font-size:32px; font-weight:bold; line-height:1.2'>{cr_CG_utils.format_seconds_to_dhm(total_sec)}</span>"
+    
+    fig = go.Figure(data=[go.Pie(
+        values=[prod_sec, down_sec],
+        labels=['Production Time', 'Run Rate Downtime'],
+        marker=dict(colors=[c_prod, c_down]),
+        hole=0.7, 
+        sort=False,
+        direction='clockwise',
+        textinfo='none',
+        hoverinfo='label+percent+value'
+    )])
+    
+    fig.update_layout(
+        annotations=[dict(text=center_text, x=0.5, y=0.5, font_size=16, showarrow=False)],
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5, font=dict(size=14)),
+        margin=dict(t=30, b=30, l=20, r=20),
+        height=320,
+        title=dict(text="Total Run Time Breakdown", x=0, font=dict(size=18)),
+        paper_bgcolor='rgba(0,0,0,0)', 
+        plot_bgcolor='rgba(0,0,0,0)'
+    )
+    
+    fig.update_traces(textinfo='label+percent', textposition='outside', textfont=dict(size=14))
+    return fig
+
+def aligned_create_modern_gauge(value, title):
+    color = cr_CG_utils.PASTEL_COLORS['green']
+    if value <= 50: color = cr_CG_utils.PASTEL_COLORS['red']
+    elif value <= 70: color = cr_CG_utils.PASTEL_COLORS['orange']
+    
+    plot_value = max(0, min(value, 100))
+    remainder = 100 - plot_value
+    visible_total = 100 
+    
+    values = [plot_value, remainder, visible_total]
+    # Changed #41424C hex base to a theme-agnostic rgba grey to adapt between modes beautifully
+    colors = [color, 'rgba(128,128,128,0.15)', 'rgba(255, 255, 255, 0)']
+    
+    fig = go.Figure(data=[go.Pie(
+        values=values,
+        hole=0.65,
+        sort=False,
+        direction='clockwise',
+        rotation=-90, 
+        textinfo='none',
+        marker=dict(colors=colors), 
+        hoverinfo='none'
+    )])
+
+    # Removed hardcoded color='white' to allow the text to default to black in Light Mode and white in Dark Mode
+    fig.add_annotation(
+        text=f"{value:.1f}%",
+        x=0.5, y=0.15,
+        font=dict(size=48, weight='bold', family="Arial"),
+        showarrow=False
+    )
+    
+    fig.update_layout(
+        title=dict(text=title, x=0, xanchor='left', y=0.9, font=dict(size=20)),
+        margin=dict(l=20, r=20, t=40, b=0),
+        height=220, 
+        showlegend=False,
+        paper_bgcolor='rgba(0,0,0,0)', 
+        plot_bgcolor='rgba(0,0,0,0)'
+    )
+    return fig
+
+def aligned_create_stability_driver_bar(mtbf, mttr, stability_index):
+    total = mtbf + mttr
+    if total == 0: return go.Figure()
+    
+    mtbf_pct = (mtbf / total) * 100
+    mttr_pct = 100 - mtbf_pct
+    
+    downtime_pct = 100 - stability_index
+    label_mtbf = f"MTBF: {mtbf:.1f}m ({mtbf_pct:.1f}%)"
+    label_mttr = f"MTTR: {mttr:.1f}m ({mttr_pct:.1f}%)"
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        y=['Cycle'], x=[mtbf], name=label_mtbf, orientation='h',
+        marker_color=cr_CG_utils.PASTEL_COLORS['blue'],
+        hoverinfo='name' 
+    ))
+    fig.add_trace(go.Bar(
+        y=['Cycle'], x=[mttr], name=label_mttr, orientation='h',
+        marker_color=cr_CG_utils.PASTEL_COLORS['red'],
+        hoverinfo='name'
+    ))
+    
+    footnote_text = f"Stability Index: {stability_index:.1f}% Stable Production Time vs. {downtime_pct:.1f}% Run Rate Downtime"
+
+    fig.update_layout(
+        barmode='stack',
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+        margin=dict(t=60, b=120, l=10, r=10), 
+        height=260, 
+        title=dict(text="MTTR & MTBF Analysis", x=0, font=dict(size=24)), 
+        showlegend=True,
+        legend=dict(
+            orientation="h", 
+            yanchor="top", 
+            y=-0.1, 
+            xanchor="center", 
+            x=0.5,
+            font=dict(size=18), 
+            bgcolor='rgba(0,0,0,0)'
+        ),
+        paper_bgcolor='rgba(0,0,0,0)', 
+        plot_bgcolor='rgba(0,0,0,0)',
+        annotations=[
+            # Handled footnote using an opacity property instead of hardcoded hex so it remains readable
+            dict(x=0, y=-0.7, text=footnote_text, showarrow=False, xref='paper', yref='paper', xanchor='left', yanchor='top', font=dict(size=16), opacity=0.6)
+        ]
+    )
+    return fig
+
+# Apply ALL utility overrides to ensure complete UI and logical harmony
 cr_CG_utils.calculate_run_summaries = aligned_calculate_run_summaries
 cr_CG_utils.get_aggregated_data = aligned_get_aggregated_data
+cr_CG_utils.create_time_breakdown_donut = aligned_create_time_breakdown_donut
+cr_CG_utils.create_modern_gauge = aligned_create_modern_gauge
+cr_CG_utils.create_stability_driver_bar = aligned_create_stability_driver_bar
 
 # ==============================================================================
 # --- 🔒 SECURITY: Initial LOGIN ---
