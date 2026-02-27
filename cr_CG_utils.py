@@ -418,61 +418,6 @@ def get_aggregated_data(df, freq_mode, config):
             
             # --- Added for detailed Tables ---
             'Run Time Sec': res['total_runtime_sec'],
-<<<<<<< HEAD
-            'Downtime Sec': res['downtime_sec'],
-            'Production Time Sec': res['production_time_sec'],
-            'Total Capacity Loss Sec': res['total_capacity_loss_sec'],
-            'Run Time': format_seconds_to_dhm(res['total_runtime_sec']),
-            'Downtime': format_seconds_to_dhm(res['downtime_sec']),
-            'Production Time': format_seconds_to_dhm(res['production_time_sec']),
-            'Normal Shots': res['normal_shots'],
-            'Total Shots': res['total_shots'],
-            'Downtime Shots': res['total_shots'] - res['normal_shots']
-        }
-        if breakdown_by_tool: row['tool_id'] = group_val[1]
-        rows.append(row)
-        
-    return pd.DataFrame(rows)
-
-def calculate_run_summaries(df_period, config):
-    """Calculates per-run metrics for the breakdown table."""
-    summary_list = []
-    if 'run_id' not in df_period.columns: return pd.DataFrame()
-    for r_id, df_run in df_period.groupby('run_id'):
-        calc = CapacityRiskCalculator(df_run, **config)
-        res = calc.results
-        summary_list.append({
-            'run_id': r_id, 'tool_ids': ', '.join(df_run['tool_id'].unique()),
-            'start_time': df_run['shot_time'].min(), 'end_time': df_run['shot_time'].max(),
-            'total_shots': res['total_shots'], 'normal_shots': res['normal_shots'],
-            'stop_events': res['stops'], 'mode_ct': df_run['mode_ct'].iloc[0],
-            'mode_lower': df_run['mode_lower'].iloc[0], 'mode_upper': df_run['mode_upper'].iloc[0],
-            'total_runtime_sec': res['total_runtime_sec'], 'production_time_sec': res['production_time_sec'],
-            'downtime_sec': res['downtime_sec'], 
-            'total_capacity_loss_sec': res['total_capacity_loss_sec'],
-            'optimal_output_parts': res['optimal_output_parts'],
-            'target_output_parts': res['target_output_parts'],
-            'actual_output_parts': res['actual_output_parts'], 'total_capacity_loss_parts': res['total_capacity_loss_parts'],
-            'capacity_loss_downtime_parts': res['capacity_loss_downtime_parts'],
-            'capacity_loss_slow_parts': res['capacity_loss_slow_parts'],
-            'capacity_gain_fast_parts': res['capacity_gain_fast_parts'],
-            'mttr_min': (res['downtime_sec']/60/res['stops']) if res['stops'] > 0 else 0,
-            'stability_index': res['stability_index']
-        })
-    return pd.DataFrame(summary_list).sort_values('start_time')
-
-# ==============================================================================
-# --- FORECAST & PO SPECIFIC UTILS ---
-# ==============================================================================
-
-def generate_po_periodic_data(df_single_po_shots, po_record, freq_mode, config, working_days_per_week, working_hours_per_day):
-    """
-    Generates periodic data for Forecast Tab using Tool-level chunking logic.
-    Ensures Actual Output matches the Capacity tab exactly.
-    """
-    start_date = pd.to_datetime(po_record.get('start_date'))
-    due_date = pd.to_datetime(po_record.get('due_date'))
-=======
             'Production Time Sec': res['production_time_sec'],
             'Downtime Sec': res['downtime_sec'],
             'Total Shots': res['total_shots'],
@@ -490,20 +435,12 @@ def generate_po_periodic_data(df_bar_view, po_record, freq_mode, config, working
     
     start_date = pd.to_datetime(start_date)
     due_date = pd.to_datetime(due_date)
-<<<<<<< HEAD
->>>>>>> parent of a9a6cf3 (Update cr_CG_utils.py)
-    total_qty = po_record.get('total_qty', 0)
-    
-    # Calculate uniform demand spread
-    total_calendar_days = max(1, (due_date - start_date).days)
-=======
     total_qty = po_record.get('total_qty', 0)
     
     # Calculate uniform demand spread
     total_calendar_days = (due_date - start_date).days
     if total_calendar_days <= 0: total_calendar_days = 1
     
->>>>>>> parent of 78d96fb (v2.9)
     total_weeks = total_calendar_days / 7.0
     total_working_days = total_weeks * working_days_per_week
     
@@ -525,23 +462,15 @@ def generate_po_periodic_data(df_bar_view, po_record, freq_mode, config, working
     current_cum = agg_df['Actual Output'].sum() if not agg_df.empty else 0
     last_actual_date = pd.to_datetime(df_bar_view['shot_time'].max()).date() if not df_bar_view.empty else start_date.date()
     
-<<<<<<< HEAD
-    days_elapsed = max(1, (last_actual_date - start_date.date()).days + 1)
-=======
     days_elapsed = (last_actual_date - start_date.date()).days + 1
     if days_elapsed <= 0: days_elapsed = 1
->>>>>>> parent of 78d96fb (v2.9)
     avg_daily_rate = current_cum / days_elapsed
     
     remaining_qty = total_qty - current_cum
     max_proj_days = 0
     if remaining_qty > 0 and avg_daily_rate > 0:
-<<<<<<< HEAD
-        max_proj_days = min(int(remaining_qty / avg_daily_rate) + 1, 365) # cap prediction limits
-=======
         max_proj_days = int(remaining_qty / avg_daily_rate) + 1
         max_proj_days = min(max_proj_days, 365) # cap prediction limits
->>>>>>> parent of 78d96fb (v2.9)
         
     projected_end_date = last_actual_date + timedelta(days=max_proj_days)
     end_timeline_date = max(due_date.date(), projected_end_date)
@@ -949,33 +878,16 @@ def generate_mttr_mtbf_analysis(analysis_df):
 # --- PLOTTING FUNCTIONS ---
 # ==============================================================================
 
-<<<<<<< HEAD
-def plot_po_periodic_chart(agg_po, df_raw, bar_freq):
-    """Plots the periodic bar chart with tools stacked per single PO."""
-    fig = go.Figure()
-    
-    breakdown_col = 'tool_id'
-    if breakdown_col not in df_raw.columns:
-        df_raw[breakdown_col] = 'Unknown'
-        
-    prod_df = df_raw[df_raw['stop_flag'] == 0].copy()
-    colors = px.colors.qualitative.Pastel
-=======
-def plot_po_periodic_chart(agg_po, df_raw, bar_freq, track_mode, chart_barmode="Stacked by Tooling"):
+def plot_po_periodic_chart(agg_po, df_raw, bar_freq, track_mode):
     """Plots the periodic stacked bar chart for PO tracking vs Demand & Configured Capacity."""
     fig = go.Figure()
     
     # Determine what to stack the bars by based on what makes sense for the view mode
-    if "Grouped" in chart_barmode:
-        breakdown_col = 'po_number' if 'Purchase Order' in track_mode else 'tool_id'
-    else:
-        breakdown_col = 'tool_id'
-        
+    breakdown_col = 'po_number' if 'Purchase Order' not in track_mode else 'tool_id'
     if breakdown_col not in df_raw.columns:
         breakdown_col = 'tool_id' # Safe fallback
         
     prod_df = df_raw[df_raw['stop_flag'] == 0].copy()
->>>>>>> parent of 78d96fb (v2.9)
     
     if not prod_df.empty:
         # Assign accurate period bounds based on the frequency selected
@@ -994,38 +906,6 @@ def plot_po_periodic_chart(agg_po, df_raw, bar_freq, track_mode, chart_barmode="
         colors = px.colors.qualitative.Pastel
         
         for i, segment in enumerate(unique_segments):
-<<<<<<< HEAD
-            seg_color = colors[i % len(colors)]
-            seg_data = bar_data[bar_data[breakdown_col] == segment]
-            fig.add_trace(go.Bar(
-                x=seg_data['Period'], y=seg_data['working_cavities'],
-                name=f'Tool: {segment}', marker_color=seg_color
-            ))
-    else:
-        fig.add_trace(go.Bar(
-            x=agg_po['Period'], y=agg_po['Actual Output'], 
-            name='Produced Quantity', 
-            marker_color=PASTEL_COLORS['blue']
-        ))
-            
-    if 'Configured Max Capacity' in agg_po.columns:
-        fig.add_trace(go.Scatter(
-            x=agg_po['Period'], y=agg_po['Configured Max Capacity'], 
-            name='Configured Max Capacity', mode='lines+markers', 
-            line=dict(color=PASTEL_COLORS['green'], dash='dot', width=2)
-        ))
-        
-    if 'Estimated Demand' in agg_po.columns:
-        fig.add_trace(go.Scatter(
-            x=agg_po['Period'], y=agg_po['Estimated Demand'], 
-            name='Estimated PO Demand', mode='lines+markers', 
-            line=dict(color=PASTEL_COLORS['red'], dash='dash', width=2)
-        ))
-    
-    fig.update_layout(
-        title=f"Periodic Production vs Demand ({bar_freq})",
-        barmode='stack', hovermode="x unified", height=450,
-=======
             seg_data = bar_data[bar_data[breakdown_col] == segment]
             fig.add_trace(go.Bar(
                 x=seg_data['Period'], y=seg_data['working_cavities'],
@@ -1051,61 +931,27 @@ def plot_po_periodic_chart(agg_po, df_raw, bar_freq, track_mode, chart_barmode="
         line=dict(color=PASTEL_COLORS['red'], dash='dash', width=2)
     ))
     
-    barmode_type = 'group' if "Grouped" in chart_barmode else 'stack'
-    
     fig.update_layout(
         title=f"Periodic Production vs Demand ({bar_freq})",
-        barmode=barmode_type, hovermode="x unified", height=450,
->>>>>>> parent of 78d96fb (v2.9)
+        barmode='stack', hovermode="x unified", height=450,
         yaxis_title="Parts Output", xaxis_title="Period"
     )
     return fig
 
-def plot_po_burnup(pred_data, po_record=None):
-    """Plots the specific PO Burn-Up tracking chart."""
+def plot_po_burnup(pred_data, po_logistics_df=None):
+    """Plots the PO specific Burn-Up tracking chart with support for multiple PO Due Date annotations."""
     if not pred_data: return go.Figure()
     fig = go.Figure()
-    
-    # --- Calculate Adherence Rate ---
-    start_dt_val = pd.to_datetime(pred_data.get('start_date', pd.Timestamp.now())).date()
-    due_dt_val = pd.to_datetime(pred_data.get('due_date', pd.Timestamp.now())).date()
-    tot_qty = pred_data.get('total_qty', 0)
-    
-    total_duration_days = max(1, (due_dt_val - start_dt_val).days)
-    target_rate_per_day = tot_qty / total_duration_days
-    
-    adherence_text = []
-    actual_dates_list = pred_data.get('actual_dates', [])
-    actual_cum_list = pred_data.get('actual_cum', [])
-    
-    for d, act_val in zip(actual_dates_list, actual_cum_list):
-        d_val = pd.to_datetime(d).date()
-        days_elapsed = max(1, (d_val - start_dt_val).days)
-        tgt_val = target_rate_per_day * days_elapsed
-        
-        adh = (act_val / tgt_val * 100) if tgt_val > 0 else 100.0
-        adherence_text.append(f"{adh:.1f}%")
-        
-    current_adh_str = adherence_text[-1] if adherence_text else "N/A"
     
     # Target Burnup (Grey Dashed)
     if len(pred_data.get('target_dates', [])) > 0:
         fig.add_trace(go.Scatter(x=pred_data['target_dates'], y=pred_data['target_vals'], 
                                  mode='lines', name='Target Burn-up', line=dict(color='grey', dash='dash')))
                              
-    # Produced Quantity (Blue Line with area shading)
-    if len(actual_dates_list) > 0:
-        fig.add_trace(go.Scatter(
-            x=actual_dates_list, 
-            y=actual_cum_list, 
-            mode='lines+markers', 
-            name='Produced Quantity', 
-            fill='tozeroy',
-            fillcolor='rgba(52, 152, 219, 0.2)',
-            line=dict(color=PASTEL_COLORS['blue'], width=3),
-            customdata=adherence_text,
-            hovertemplate='Date: %{x}<br>Produced Qty: %{y:,.0f}<br>Adherence: %{customdata}<extra></extra>'
-        ))
+    # Actual Cumulative (Blue Line)
+    if len(pred_data.get('actual_dates', [])) > 0:
+        fig.add_trace(go.Scatter(x=pred_data['actual_dates'], y=pred_data['actual_cum'], 
+                                 mode='lines+markers', name='Actual Accumulated', line=dict(color=PASTEL_COLORS['blue'], width=3)))
                              
     # Forecast Avg (Orange Dot)
     if pred_data.get('avg_daily_rate', 0) > 0 and len(pred_data.get('forecast_dates', [])) > 0:
@@ -1117,21 +963,30 @@ def plot_po_burnup(pred_data, po_record=None):
         fig.add_trace(go.Scatter(x=pred_data['forecast_dates'], y=pred_data['forecast_opt'], 
                                  mode='lines', name=f"Forecast (Opt: {pred_data['opt_daily_rate']:.0f}/d)", line=dict(color=PASTEL_COLORS['green'], dash='dot')))
                              
-    if pd.notna(pred_data.get('due_date')):
-        due_ts = pd.to_datetime(pred_data['due_date']).timestamp() * 1000
-        fig.add_vline(x=due_ts, line_width=2, line_dash="dash", line_color="red", annotation_text="PO Due Date")
+    # Annotations - Loop through logistics records to print specific PO Due dates
+    if po_logistics_df is not None and not po_logistics_df.empty:
+        colors = px.colors.qualitative.Set1
+        for idx, row in po_logistics_df.iterrows():
+            if pd.notna(row['due_date']):
+                due_ts = pd.to_datetime(row['due_date']).timestamp() * 1000
+                po_num = row['po_number']
+                fig.add_vline(x=due_ts, line_width=1.5, line_dash="dash", line_color=colors[idx % len(colors)], annotation_text=f"{po_num} Due")
+    else:
+        # Fallback to general due date
+        if pd.notna(pred_data.get('due_date')):
+            due_ts = pd.to_datetime(pred_data['due_date']).timestamp() * 1000
+            fig.add_vline(x=due_ts, line_width=2, line_dash="dash", line_color="red", annotation_text="PO Due Date")
     
-    fig.add_hline(y=tot_qty, line_width=2, line_dash="solid", line_color="purple", annotation_text="Target Qty")
+    fig.add_hline(y=pred_data.get('total_qty', 0), line_width=2, line_dash="solid", line_color="purple", annotation_text="Total Aggregated Qty")
     
+    # Force the X-axis bounds to represent the exact same context duration as the periodic chart
     start_dt = pd.to_datetime(pred_data.get('start_date', pd.Timestamp.now()))
     max_dt_target = pd.to_datetime(pred_data['target_dates'][-1]) if len(pred_data.get('target_dates', [])) > 0 else start_dt
     max_dt_forecast = pd.to_datetime(pred_data['forecast_dates'][-1]) if len(pred_data.get('forecast_dates', [])) > 0 else max_dt_target
     end_dt = max(max_dt_target, max_dt_forecast)
 
-    chart_title = f"PO Target Burn-up vs Reality (Current Adherence: {current_adh_str})"
-
     fig.update_layout(
-        title=chart_title, 
+        title="PO Target Burn-up vs Reality", 
         hovermode="x unified", 
         height=500, 
         yaxis_title="Accumulated Parts Output", 
@@ -1426,13 +1281,4 @@ def plot_shot_analysis(df_shots, zoom_y=None):
     fig.add_hline(y=avg_ref, line_dash="dash", line_color="green", annotation_text=f"Avg Approved CT: {avg_ref:.2f}s")
     
     if zoom_y is None and not df_shots.empty:
-        cts = df_shots['actual_ct']
-        if len(cts) > 0:
-            ref_max = df_shots['approved_ct'].max() * 4
-            dist_max = cts.quantile(0.95) * 1.5
-            zoom_y = max(ref_max, dist_max)
-
-    layout_args = dict(title="Shot-by-Shot Analysis", yaxis_title="Cycle Time (sec)", hovermode="closest")
-    if zoom_y: layout_args['yaxis_range'] = [0, zoom_y]
-    fig.update_layout(**layout_args)
-    return fig
+        cts = df_shots['
