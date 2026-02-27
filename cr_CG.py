@@ -11,10 +11,11 @@ import importlib
 importlib.reload(cr_CG_utils)
 
 # ==============================================================================
-# --- EXACT ALIGNMENT MONKEYPATCH ---
+# --- EXACT ALIGNMENT & CONTEXT MONKEYPATCH ---
 # ==============================================================================
-# This ensures that ALL tabs (Forecast, Trends, Capacity) draw from a single, 
-# unified global processing pass, eliminating boundary/slice discrepancies.
+# This ensures that ALL tabs draw from a single, unified global processing pass, 
+# eliminating boundary/slice discrepancies. It also forcibly extracts contextual 
+# hierarchy (supplier, part, etc.) to itemize tables.
 
 def aligned_calculate_run_summaries(df_period, config):
     summary_list = []
@@ -61,9 +62,23 @@ def aligned_calculate_run_summaries(df_period, config):
         total_shots = len(df_run)
         normal_shots = len(prod_df)
         
+        # Extract contextual data for itemization
+        po = ', '.join(df_run['po_number'].astype(str).unique()) if 'po_number' in df_run.columns else 'Unknown'
+        sup = ', '.join(df_run['supplier_id'].astype(str).unique()) if 'supplier_id' in df_run.columns else 'Unknown'
+        plt = ', '.join(df_run['plant_id'].astype(str).unique()) if 'plant_id' in df_run.columns else 'Unknown'
+        proj = ', '.join(df_run['project_id'].astype(str).unique()) if 'project_id' in df_run.columns else 'Unknown'
+        comp = ', '.join(df_run['component_id'].astype(str).unique()) if 'component_id' in df_run.columns else 'Unknown'
+        part = ', '.join(df_run['part_id'].astype(str).unique()) if 'part_id' in df_run.columns else 'Unknown'
+        
         summary_list.append({
             'run_id': r_id,
             'tool_ids': ', '.join(df_run['tool_id'].astype(str).unique()) if 'tool_id' in df_run.columns else 'Unknown',
+            'po_number': po,
+            'supplier': sup,
+            'plant': plt,
+            'project': proj,
+            'component': comp,
+            'part': part,
             'start_time': start,
             'end_time': end,
             'total_shots': total_shots,
@@ -211,9 +226,7 @@ def display_filter_context(ctx, tool_name=None):
     st.info("🗂️ **Current Filter Scope:** " + " | ".join(active_filters))
 
 def create_capsule(value, color_logic="neutral", suffix="", inverse=False):
-    """
-    Generates an HTML string for a styled pill/capsule.
-    """
+    """Generates an HTML string for a styled pill/capsule."""
     bg_color = "#262730" 
     text_color = "#ffffff"
     
@@ -231,6 +244,11 @@ def create_capsule(value, color_logic="neutral", suffix="", inverse=False):
     elif color_logic == "net":
         if value >= 0: bg_color = cr_CG_utils.PASTEL_COLORS['green']; text_color = "#0E1117"
         else: bg_color = cr_CG_utils.PASTEL_COLORS['red']; text_color = "#0E1117"
+    elif color_logic == "status":
+        if "Track" in value or "Fulfilled" in value: bg_color = cr_CG_utils.PASTEL_COLORS['green']; text_color = "#0E1117"
+        elif "Late" in value: bg_color = cr_CG_utils.PASTEL_COLORS['red']; text_color = "#0E1117"
+        else: bg_color = cr_CG_utils.PASTEL_COLORS['orange']; text_color = "#0E1117"
+        return f'<span style="background-color:{bg_color}; color:{text_color}; padding:2px 8px; border-radius:10px; font-weight:bold; font-size:0.8em;">{value}</span>'
 
     return f'<span style="background-color:{bg_color}; color:{text_color}; padding:2px 8px; border-radius:10px; font-weight:bold; font-size:0.8em;">{value:,.1f}{suffix}</span>'
 
@@ -315,9 +333,14 @@ def render_risk_tower(df_tool, config):
         p_max = recent['Period'].max()
         if isinstance(p_min, pd.Period): p_min = p_min.start_time.date()
         if isinstance(p_max, pd.Period): p_max = p_max.start_time.date() 
+        
+        po = tool_specific_df['po_number'].iloc[0] if 'po_number' in tool_specific_df.columns else 'Unknown'
+        part = tool_specific_df['part_id'].iloc[0] if 'part_id' in tool_specific_df.columns else 'Unknown'
 
         results.append({
             "Tool ID": tool_id,
+            "PO Number": po,
+            "Part": part,
             "Analysis Period": f"{p_min} to {p_max}",
             "Risk Score": risk_score,
             "Primary Risk Factor": risk_factor,
@@ -425,12 +448,107 @@ def render_trends_tab(df_tool, config, key_prefix="global"):
     else:
         st.warning(f"Metric {metric_to_plot} not found in data.")
 
+def render_po_fulfilment_tab(df_tool, config, df_logistics, working_days, working_hours, key_prefix="global"):
+    """New Tab: Analyzes Fulfilment % of PO targets dynamically across multiple dimensions."""
+    if key_prefix == "global":
+        st.header("PO Fulfilment Analysis")
+        
+    if df_logistics.empty or 'po_number' not in df_tool.columns:
+        st.warning("Logistics Plan and PO Number mapping in the production data are both required for this tab.")
+        return
+        
+    c1, c2 = st.columns(2)
+    freq = c1.selectbox("Time Frequency", ["Overall", "Monthly", "Weekly", "Daily"], key=f"po_ful_freq_{key_prefix}")
+    dim = c2.selectbox("Breakdown By", ["Purchase Order", "Project", "Component", "Part", "Supplier", "Plant", "Tooling"], key=f"po_ful_dim_{key_prefix}")
+    
+    dim_map = {
+        "Purchase Order": "po_number", "Project": "project_id", "Component": "component_id",
+        "Part": "part_id", "Supplier": "supplier_id", "Plant": "plant_id", "Tooling": "tool_id"
+    }
+    group_col = dim_map[dim]
+    
+    active_pos = df_tool['po_number'].dropna().unique()
+    all_po_data = []
+    
+    with st.spinner("Calculating Fulfilment timelines via core engine..."):
+        for po in active_pos:
+            if po == 'Unknown': continue
+            po_shots = df_tool[df_tool['po_number'] == po]
+            po_rec_df = df_logistics[df_logistics['po_number'] == po]
+            if po_rec_df.empty: continue
+            
+            po_rec = po_rec_df.iloc[0].to_dict()
+            
+            # Use generate_po_periodic_data to securely get Daily actuals mapped to Demand targets
+            daily_df = cr_CG_utils.generate_po_periodic_data(po_shots, po_rec, 'Daily', config, working_days, working_hours)
+            if daily_df is None or daily_df.empty: continue
+            
+            # Map contextual hierarchy for pivoting
+            for d_name, d_col in dim_map.items():
+                if d_col in po_shots.columns:
+                    val = ', '.join(sorted([str(x) for x in po_shots[d_col].dropna().unique() if str(x).lower() != 'unknown']))
+                    if not val: val = "Unknown"
+                    daily_df[d_col] = val
+                else:
+                    daily_df[d_col] = 'Unknown'
+                    
+            all_po_data.append(daily_df)
+            
+    if not all_po_data:
+        st.warning("No overlapping Purchase Orders between Production Data and Logistics Plan.")
+        return
+        
+    df_timeline = pd.concat(all_po_data, ignore_index=True)
+    
+    if freq == "Overall":
+        agg_df = df_timeline.groupby(group_col).agg({
+            'Estimated Demand': 'sum',
+            'Actual Output': 'sum'
+        }).reset_index()
+        
+        # In overall mode, the demand is just the sum of Total Qty for the POs in that slice.
+        agg_df['Fulfilment %'] = (agg_df['Actual Output'] / agg_df['Estimated Demand'] * 100).fillna(0)
+        agg_df.rename(columns={group_col: dim, 'Estimated Demand': 'Target Quantity'}, inplace=True)
+        agg_df = agg_df.sort_values('Fulfilment %', ascending=False)
+        
+        fig = px.bar(agg_df, x=dim, y=['Actual Output', 'Target Quantity'], barmode='group', 
+                     title=f"Overall PO Fulfilment by {dim}")
+        st.plotly_chart(fig, use_container_width=True, key=f"ful_fig_overall_{key_prefix}")
+        
+        st.dataframe(agg_df.style.format({'Target Quantity': '{:,.0f}', 'Actual Output': '{:,.0f}', 'Fulfilment %': '{:.1f}%'}), 
+                     use_container_width=True, hide_index=True)
+                     
+    else:
+        df_timeline['Period_Obj'] = pd.to_datetime(df_timeline['Period'])
+        if freq == 'Weekly':
+            df_timeline['Period_Agg'] = df_timeline['Period_Obj'].dt.to_period('W').astype(str)
+        elif freq == 'Monthly':
+            df_timeline['Period_Agg'] = df_timeline['Period_Obj'].dt.to_period('M').astype(str)
+        else:
+            df_timeline['Period_Agg'] = df_timeline['Period_Obj'].dt.date.astype(str)
+            
+        agg_df = df_timeline.groupby(['Period_Agg', group_col]).agg({
+            'Estimated Demand': 'sum',
+            'Actual Output': 'sum'
+        }).reset_index()
+        
+        agg_df['Fulfilment %'] = (agg_df['Actual Output'] / agg_df['Estimated Demand'] * 100).fillna(0)
+        agg_df.rename(columns={'Period_Agg': 'Period', group_col: dim, 'Estimated Demand': 'Periodic Demand'}, inplace=True)
+        agg_df = agg_df.sort_values('Period')
+        
+        fig = px.line(agg_df, x='Period', y='Fulfilment %', color=dim, markers=True, 
+                      title=f"Periodic Fulfilment % by {dim} ({freq})")
+        fig.add_hline(y=100, line_dash="dash", line_color="green", annotation_text="100% Fulfilment")
+        st.plotly_chart(fig, use_container_width=True, key=f"ful_fig_time_{key_prefix}")
+        
+        st.dataframe(agg_df.style.format({'Periodic Demand': '{:,.0f}', 'Actual Output': '{:,.0f}', 'Fulfilment %': '{:.1f}%'}), 
+                     use_container_width=True, hide_index=True)
+
 def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, working_hours_per_day, key_prefix="global"):
     """Renders the PO Forecast & Burn-up Tab using dynamically filtered metrics."""
     if key_prefix == "global":
         st.header("Logistics Plan Tracking & Forecast")
     
-    # Check if we have PO data mapping in the filtered data
     has_po_in_shots = 'po_number' in df_tool.columns and not df_tool['po_number'].replace("Unknown", pd.NA).isna().all()
     
     if not df_logistics.empty and has_po_in_shots:
@@ -469,7 +587,6 @@ def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, wo
             st.warning(f"No Purchase Orders are associated with your current {track_mode} selection. Please select at least one item.")
             return
             
-        # Aggregate the Logistics PO records safely into a composite
         subset_logistics = df_logistics[df_logistics['po_number'].isin(selected_po_list)]
         df_po_shots = df_tool[df_tool['po_number'].isin(selected_po_list)].copy()
         
@@ -486,21 +603,80 @@ def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, wo
             'due_date': max_due
         }
         
-        # --- PO Summary Box ---
+        # --- PO Summary Box (UPGRADED) ---
         st.markdown("### 📋 Selected Purchase Orders Summary")
         
         summary_data = []
         for _, row in subset_logistics.iterrows():
+            po_num = row['po_number']
+            po_shots_iter = df_po_shots[df_po_shots['po_number'] == po_num]
+            
+            if po_shots_iter.empty:
+                summary_data.append({
+                    "PO Number": po_num, "Project": row.get('project_id',''), "Part": row.get('part_id',''),
+                    "Target Qty": row.get('total_qty', 0), "Produced Qty": 0, "Start Date": "N/A", "Due Date": "N/A",
+                    "Est. Completion": "N/A", "Status": "No Data"
+                })
+                continue
+                
+            calc = cr_CG_utils.CapacityRiskCalculator(po_shots_iter, **config)
+            act_qty = calc.results['actual_output_parts'] if calc.results else 0
+            
+            agg_daily = cr_CG_utils.get_aggregated_data(po_shots_iter, 'Daily', config)
+            finish_date = "N/A"
+            status = "Unknown"
+            
+            start_date_val = pd.to_datetime(row['start_date']).strftime('%Y-%m-%d') if pd.notna(row['start_date']) else "N/A"
+            due_date_val = pd.to_datetime(row['due_date']).strftime('%Y-%m-%d') if pd.notna(row['due_date']) else "N/A"
+            
+            if not agg_daily.empty:
+                start_dt = pd.to_datetime(row['start_date']).date() if pd.notna(row['start_date']) else po_shots_iter['shot_time'].min().date()
+                due_dt = pd.to_datetime(row['due_date']).date() if pd.notna(row['due_date']) else None
+                
+                last_act_date = agg_daily['Period'].max()
+                if isinstance(last_act_date, str):
+                    try: last_act_date = pd.to_datetime(last_act_date).date()
+                    except: last_act_date = start_dt
+                
+                days_elapsed = (last_act_date - start_dt).days + 1
+                if days_elapsed < 1: days_elapsed = 1
+                avg_rate = act_qty / days_elapsed
+                
+                if act_qty >= row['total_qty']:
+                    status = "Fulfilled"
+                    finish_date = "Done"
+                elif avg_rate > 0:
+                    rem = row['total_qty'] - act_qty
+                    days_rem = int(rem / avg_rate)
+                    est_finish = last_act_date + timedelta(days=days_rem)
+                    finish_date = est_finish.strftime('%Y-%m-%d')
+                    if due_dt and est_finish > due_dt:
+                        status = "Late (At Risk)"
+                    else:
+                        status = "On Track"
+                else:
+                    status = "Stalled"
+                    
             summary_data.append({
-                "PO Number": row['po_number'],
-                "Project": row['project_id'],
-                "Part": row['part_id'],
-                "Target Qty": f"{row['total_qty']:,.0f}",
-                "Start Date": pd.to_datetime(row['start_date']).strftime('%Y-%m-%d') if pd.notna(row['start_date']) else "N/A",
-                "Due Date": pd.to_datetime(row['due_date']).strftime('%Y-%m-%d') if pd.notna(row['due_date']) else "N/A"
+                "PO Number": po_num,
+                "Project": row.get('project_id',''),
+                "Part": row.get('part_id',''),
+                "Target Qty": row.get('total_qty',0),
+                "Produced Qty": act_qty,
+                "Start Date": start_date_val,
+                "Due Date": due_date_val,
+                "Est. Completion": finish_date,
+                "Status": status
             })
             
-        st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
+        df_summary_disp = pd.DataFrame(summary_data)
+        
+        # Apply capsule styling to the status column
+        st.write(
+            df_summary_disp.style.format({'Target Qty': '{:,.0f}', 'Produced Qty': '{:,.0f}'})
+            .map(lambda x: f"background-color: {cr_CG_utils.PASTEL_COLORS['green']}; color: black" if "Track" in str(x) or "Fulfilled" in str(x) else 
+                           f"background-color: {cr_CG_utils.PASTEL_COLORS['red']}; color: black" if "Late" in str(x) else "", subset=['Status'])
+        )
 
         st.markdown("---")
         
@@ -517,7 +693,6 @@ def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, wo
         po_record = subset_logistics[subset_logistics['po_number'] == selected_graph_po].iloc[0].to_dict()
         df_single_po_shots = df_po_shots[df_po_shots['po_number'] == selected_graph_po].copy()
         
-        # Process the raw data to generate 'stop_flag' and other metrics needed for the chart
         calc_for_chart = cr_CG_utils.CapacityRiskCalculator(df_single_po_shots, **config)
         df_processed_for_chart = calc_for_chart.results.get('processed_df', df_single_po_shots)
         
@@ -552,7 +727,6 @@ def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, wo
                 days_avg = remaining / avg_rate if avg_rate > 0 else 9999
                 days_opt = remaining / opt_rate if opt_rate > 0 else 9999
                 
-                # Protect against series max
                 actual_dates = pred_data.get('actual_dates', [])
                 if len(actual_dates) > 0:
                     last_act_date = actual_dates.iloc[-1] if hasattr(actual_dates, 'iloc') else actual_dates[-1]
@@ -580,20 +754,28 @@ def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, wo
         else:
             st.warning("Not enough production data to generate burn-up.")
             
-        # --- Breakdown per Tooling Table ---
-        st.markdown("### Breakdown per Active Tooling")
+        # --- Breakdown per Active Tooling Table (UPGRADED) ---
+        st.markdown("### Itemized Breakdown per Active Tooling")
         tool_summary = []
         for tool_id, tool_df_iter in df_po_shots.groupby('tool_id'):
             calc = cr_CG_utils.CapacityRiskCalculator(tool_df_iter, **config)
             res = calc.results
             if not res: continue
             
+            po = tool_df_iter['po_number'].iloc[0] if 'po_number' in tool_df_iter.columns else 'Unknown'
+            part = tool_df_iter['part_id'].iloc[0] if 'part_id' in tool_df_iter.columns else 'Unknown'
+            comp = tool_df_iter['component_id'].iloc[0] if 'component_id' in tool_df_iter.columns else 'Unknown'
+            proj = tool_df_iter['project_id'].iloc[0] if 'project_id' in tool_df_iter.columns else 'Unknown'
             sup = tool_df_iter['supplier_id'].iloc[0] if 'supplier_id' in tool_df_iter.columns else 'Unknown'
             plt_id = tool_df_iter['plant_id'].iloc[0] if 'plant_id' in tool_df_iter.columns else 'Unknown'
             
             tool_summary.append({
                 'Tool ID': tool_id,
-                'Supplier Name': sup,
+                'PO Number': po,
+                'Part': part,
+                'Component': comp,
+                'Project': proj,
+                'Supplier': sup,
                 'Plant': plt_id,
                 'Total Shots': res['total_shots'],
                 'Actual Output': res['actual_output_parts'],
@@ -614,7 +796,6 @@ def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, wo
             }), use_container_width=True, hide_index=True)
             
     else:
-        # Fallback to Generic Projection if no PO data available
         st.warning("Upload a Logistics Plan and ensure Production Data has PO_NUMBER to enable full tracking. Displaying generic forecast below.")
         
         with st.expander("ℹ️ How Prediction Works (Formulas & Logic)", expanded=False):
@@ -677,9 +858,7 @@ def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, wo
 
 
 def render_dashboard(df_tool, config, dashboard_mode="Optimal", key_prefix="global"):
-    """
-    Renders the Main Capacity Dashboard.
-    """
+    """Renders the Main Capacity Dashboard."""
     if key_prefix == "global":
         st.header(f"Capacity Dashboard ({dashboard_mode})")
     
@@ -737,7 +916,7 @@ def render_dashboard(df_tool, config, dashboard_mode="Optimal", key_prefix="glob
     if df_view.empty: st.warning("No data found."); return
 
     # --- Calculations ---
-    run_breakdown_df = cr_CG_utils.calculate_run_summaries(df_view, config)
+    run_breakdown_df = aligned_calculate_run_summaries(df_view, config)
     if run_breakdown_df.empty: st.warning("No runs found."); return
 
     total_runtime = run_breakdown_df['total_runtime_sec'].sum()
@@ -793,7 +972,7 @@ def render_dashboard(df_tool, config, dashboard_mode="Optimal", key_prefix="glob
         )
 
     # ==========================================================================
-    # --- VISUAL KPI DASHBOARD (New Section) ---
+    # --- VISUAL KPI DASHBOARD ---
     # ==========================================================================
     
     st.plotly_chart(
@@ -862,7 +1041,7 @@ def render_dashboard(df_tool, config, dashboard_mode="Optimal", key_prefix="glob
             st.markdown(cr_CG_utils.generate_mttr_mtbf_analysis(run_breakdown_df), unsafe_allow_html=True)
 
     # ==========================================================================
-    # --- NUMERIC METRICS (KPI Grid 3) ---
+    # --- NUMERIC METRICS ---
     # ==========================================================================
     with st.container(border=True):
         c1, c2, c3, c4, c5 = st.columns(5)
@@ -952,6 +1131,12 @@ def render_dashboard(df_tool, config, dashboard_mode="Optimal", key_prefix="glob
         
         d_df = d_df.rename(columns={
             'tool_ids': 'Tool(s)',
+            'po_number': 'PO Number',
+            'supplier': 'Supplier',
+            'plant': 'Plant',
+            'project': 'Project',
+            'component': 'Component',
+            'part': 'Part',
             'total_shots': 'Total Shots',
             'normal_shots': 'Normal Shots',
             'stop_events': 'Stop Events',
@@ -964,7 +1149,8 @@ def render_dashboard(df_tool, config, dashboard_mode="Optimal", key_prefix="glob
         })
 
         cols_to_show = [
-            'RUN ID', 'Tool(s)', 'Period', 'Total Shots', 'Normal Shots', 'Stop Events',
+            'RUN ID', 'PO Number', 'Tool(s)', 'Supplier', 'Plant', 'Project', 'Component', 'Part', 'Period', 
+            'Total Shots', 'Normal Shots', 'Stop Events',
             'Mode CT', 'Optimal Output', 'Actual Output',
             'Loss (RR Downtime)', 'Loss (Slow Cycles)', 'Total Net Loss',
             'Total Run Duration', 'Production Time', 'Run Rate Downtime',
@@ -1344,7 +1530,7 @@ def main():
     st.markdown("---")
 
     # --- TABS ---
-    t_risk, t_opt, t_tgt, t_trend, t_fc = st.tabs(["Risk Tower", "Capacity (Optimal)", "Capacity (Target)", "Trends", "Forecast (PO Tracking)"])
+    t_risk, t_opt, t_tgt, t_trend, t_fc, t_fulfil = st.tabs(["Risk Tower", "Capacity (Optimal)", "Capacity (Target)", "Trends", "Forecast (PO Tracking)", "PO Fulfilment"])
     
     with t_risk: 
         render_risk_tower(df_tool, config)
@@ -1399,6 +1585,19 @@ def main():
                     else: st.warning(f"No data for {t_id}")
         else:
             if not df_tool.empty: render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, working_hours_per_day, key_prefix="global")
+            else: st.warning("No data.")
+            
+    with t_fulfil:
+        if view_mode == "Compare Side-by-Side":
+            cols = st.columns(len(selected_tools))
+            for i, t_id in enumerate(selected_tools):
+                with cols[i]:
+                    st.markdown(f"<h3 style='text-align: center; color: deepskyblue;'>Tool: {t_id}</h3>", unsafe_allow_html=True)
+                    t_df = df_tool[df_tool['tool_id'].astype(str) == t_id]
+                    if not t_df.empty: render_po_fulfilment_tab(t_df, config, df_logistics, working_days_per_week, working_hours_per_day, key_prefix=t_id)
+                    else: st.warning(f"No data for {t_id}")
+        else:
+            if not df_tool.empty: render_po_fulfilment_tab(df_tool, config, df_logistics, working_days_per_week, working_hours_per_day, key_prefix="global")
             else: st.warning("No data.")
 
 if __name__ == "__main__":
