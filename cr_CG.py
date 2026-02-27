@@ -54,7 +54,7 @@ def display_filter_context(ctx, tool_name=None):
         return
         
     active_filters = [f"**{k}:** {v}" for k, v in ctx.items() if v != "All"]
-    if tool_name and tool_name != "Multiple":
+    if tool_name and tool_name != "Multiple Tools (Rolled-Up)":
         active_filters.append(f"**Tool:** {tool_name}")
         
     if active_filters:
@@ -90,11 +90,10 @@ def create_capsule(value, color_logic="neutral", suffix="", inverse=False):
 # --- 1. RENDER FUNCTIONS ---
 # ==============================================================================
 
-def render_risk_tower(df_all_tools, config, filter_context):
+def render_risk_tower(df_tool, config):
     """Renders the Risk Tower (Tab 1)."""
-    st.title("Capacity Risk Tower")
-    display_filter_context(filter_context, "Multiple Tools (Rolled-Up)")
-    st.info("This tower identifies tools at risk by analyzing weekly production gaps over the last 4 weeks.")
+    st.header("Capacity Risk Tower")
+    st.info("This tower identifies tools at risk by analyzing weekly production gaps over the last 4 weeks based on your active filters.")
 
     with st.expander("ℹ️ How the Risk Tower Works"):
         st.markdown("""
@@ -122,12 +121,12 @@ def render_risk_tower(df_all_tools, config, filter_context):
         """, unsafe_allow_html=True)
 
     results = []
-    tools = sorted(df_all_tools['tool_id'].unique())
+    tools = sorted(df_tool['tool_id'].unique())
     
     for tool_id in tools:
-        tool_df = df_all_tools[df_all_tools['tool_id'] == tool_id]
+        tool_specific_df = df_tool[df_tool['tool_id'] == tool_id]
         
-        weekly_df = cr_CG_utils.get_aggregated_data(tool_df, 'Weekly', config)
+        weekly_df = cr_CG_utils.get_aggregated_data(tool_specific_df, 'Weekly', config)
         
         if weekly_df.empty:
             continue
@@ -179,7 +178,7 @@ def render_risk_tower(df_all_tools, config, filter_context):
         })
 
     if not results:
-        st.warning("Not enough data to generate the Risk Tower.")
+        st.warning("Not enough data to generate the Risk Tower for the current selection.")
         return
 
     risk_df = pd.DataFrame(results)
@@ -201,11 +200,10 @@ def render_risk_tower(df_all_tools, config, filter_context):
         hide_index=True
     )
 
-def render_trends_tab(df_tool, tool_name, config, filter_context):
+def render_trends_tab(df_tool, config):
     """Renders the Trends Tab."""
     st.header("Historical Performance Trends")
-    display_filter_context(filter_context, tool_name)
-    st.info("Trends are calculated using 'Run-Based' logic consistent with the Dashboard.")
+    st.info("Trends are calculated using the core engine matching the Optimal Capacity logic.")
 
     col_freq, col_mode, _ = st.columns([1, 1, 2])
     with col_freq:
@@ -278,16 +276,15 @@ def render_trends_tab(df_tool, tool_name, config, filter_context):
     else:
         st.warning(f"Metric {metric_to_plot} not found in data.")
 
-def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, working_hours_per_day, filter_context):
-    """Renders the PO Forecast & Burn-up Tab using dynamic configuration panels."""
+def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, working_hours_per_day):
+    """Renders the PO Forecast & Burn-up Tab using dynamically filtered metrics."""
     st.header("Logistics Plan Tracking & Forecast")
-    display_filter_context(filter_context, "Multiple Tools (Rolled-up)")
     
-    # Check if we have PO data mapping
-    has_po_in_shots = 'po_number' in df_scope.columns and not df_scope['po_number'].replace("Unknown", pd.NA).isna().all()
+    # Check if we have PO data mapping in the filtered data
+    has_po_in_shots = 'po_number' in df_tool.columns and not df_tool['po_number'].replace("Unknown", pd.NA).isna().all()
     
     if not df_logistics.empty and has_po_in_shots:
-        part_pos = df_scope['po_number'].unique()
+        part_pos = df_tool['po_number'].unique()
         avail_pos = df_logistics[df_logistics['po_number'].isin(part_pos)]['po_number'].unique()
         
         if len(avail_pos) == 0:
@@ -305,17 +302,17 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
             selected_po_list = selected_pos
             
         elif track_mode == "Supplier(s)":
-            avail_sups = [s for s in df_scope['supplier_id'].unique() if str(s).lower() not in ['unknown', 'nan']]
+            avail_sups = [s for s in df_tool['supplier_id'].unique() if str(s).lower() not in ['unknown', 'nan']]
             if not avail_sups: st.warning("No identified Supplier data in scope."); return
             selected_sups = st.multiselect("Select Supplier(s) to Track", avail_sups, default=avail_sups)
-            linked_pos = df_scope[df_scope['supplier_id'].isin(selected_sups)]['po_number'].unique()
+            linked_pos = df_tool[df_tool['supplier_id'].isin(selected_sups)]['po_number'].unique()
             selected_po_list = [po for po in linked_pos if po in avail_pos]
             
         elif track_mode == "Plant(s)":
-            avail_plts = [p for p in df_scope['plant_id'].unique() if str(p).lower() not in ['unknown', 'nan']]
+            avail_plts = [p for p in df_tool['plant_id'].unique() if str(p).lower() not in ['unknown', 'nan']]
             if not avail_plts: st.warning("No identified Plant data in scope."); return
             selected_plts = st.multiselect("Select Plant(s) to Track", avail_plts, default=avail_plts)
-            linked_pos = df_scope[df_scope['plant_id'].isin(selected_plts)]['po_number'].unique()
+            linked_pos = df_tool[df_tool['plant_id'].isin(selected_plts)]['po_number'].unique()
             selected_po_list = [po for po in linked_pos if po in avail_pos]
             
         if not selected_po_list:
@@ -324,15 +321,13 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
             
         # Aggregate the Logistics PO records safely into a composite
         subset_logistics = df_logistics[df_logistics['po_number'].isin(selected_po_list)]
-        df_po_shots = df_scope[df_scope['po_number'].isin(selected_po_list)].copy()
+        df_po_shots = df_tool[df_tool['po_number'].isin(selected_po_list)].copy()
         
         total_qty = pd.to_numeric(subset_logistics['total_qty'], errors='coerce').sum()
         min_start = pd.to_datetime(subset_logistics['start_date']).min()
         max_due = pd.to_datetime(subset_logistics['due_date']).max()
         
         po_display_name = ", ".join(selected_po_list) if len(selected_po_list) <= 3 else f"{len(selected_po_list)} POs Selected"
-        proj_display = ", ".join(subset_logistics['project_id'].astype(str).unique())
-        part_display = ", ".join(subset_logistics['part_id'].astype(str).unique())
         
         composite_po_record = {
             'po_number': po_display_name,
@@ -438,13 +433,13 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
         # --- Breakdown per Tooling Table ---
         st.markdown("### Breakdown per Active Tooling")
         tool_summary = []
-        for tool_id, tool_df in df_po_shots.groupby('tool_id'):
-            calc = cr_CG_utils.CapacityRiskCalculator(tool_df, **config)
+        for tool_id, tool_df_iter in df_po_shots.groupby('tool_id'):
+            calc = cr_CG_utils.CapacityRiskCalculator(tool_df_iter, **config)
             res = calc.results
             if not res: continue
             
-            sup = tool_df['supplier_id'].iloc[0] if 'supplier_id' in tool_df.columns else 'Unknown'
-            plt_id = tool_df['plant_id'].iloc[0] if 'plant_id' in tool_df.columns else 'Unknown'
+            sup = tool_df_iter['supplier_id'].iloc[0] if 'supplier_id' in tool_df_iter.columns else 'Unknown'
+            plt_id = tool_df_iter['plant_id'].iloc[0] if 'plant_id' in tool_df_iter.columns else 'Unknown'
             
             tool_summary.append({
                 'Tool ID': tool_id,
@@ -474,7 +469,7 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
         
         with st.expander("ℹ️ How Prediction Works (Formulas & Logic)", expanded=False):
             st.markdown("""
-            This model projects future capacity based on historical daily performance.
+            This model projects future capacity based on historical daily performance derived securely via the Core Capacity Engine.
             ### 1. 🔵 Blue Line: Forecast (Average Rate)
             Projects future output using your **Average Daily Rate**.
             ### 2. 🟢 Green Line: Best Case (Peak Rate)
@@ -483,7 +478,7 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
             Shows the daily output required to hit your Demand Goal by the Target Date.
             """, unsafe_allow_html=True)
 
-        agg_daily = cr_CG_utils.get_aggregated_data(df_scope, 'Daily', config)
+        agg_daily = cr_CG_utils.get_aggregated_data(df_tool, 'Daily', config)
         if agg_daily.empty:
             st.warning("Not enough daily data to generate a forecast.")
             return
@@ -531,12 +526,11 @@ def render_forecast_tab(df_scope, config, df_logistics, working_days_per_week, w
                 """, unsafe_allow_html=True)
 
 
-def render_dashboard(df_tool, tool_name, config, dashboard_mode="Optimal", filter_context=None):
+def render_dashboard(df_tool, config, dashboard_mode="Optimal"):
     """
     Renders the Main Capacity Dashboard.
     """
     st.header(f"Capacity Dashboard ({dashboard_mode})")
-    display_filter_context(filter_context, tool_name)
     
     benchmark_mode = "Optimal Output" if dashboard_mode == "Optimal" else "Target Output"
     key_suffix = f"_{dashboard_mode.lower()}"
@@ -1189,14 +1183,19 @@ def main():
               'downtime_gap_tolerance': downtime_gap_tolerance, 'run_interval_hours': run_interval_hours, 
               'default_cavities': default_cavities, 'remove_maintenance': remove_maint}
     
+    # Global Title and Filter Scope Display
+    st.title("Capacity Risk Dashboard")
+    display_filter_context(filter_context, tool_name_display)
+    st.markdown("---")
+
     # --- TABS ---
     t_risk, t_opt, t_tgt, t_trend, t_fc = st.tabs(["Risk Tower", "Capacity (Optimal)", "Capacity (Target)", "Trends", "Forecast (PO Tracking)"])
     
-    with t_risk: render_risk_tower(df_part, config, filter_context)
-    with t_opt: render_dashboard(df_tool, tool_name_display, config, "Optimal", filter_context) if not df_tool.empty else st.warning("No data.")
-    with t_tgt: render_dashboard(df_tool, tool_name_display, config, "Target", filter_context) if not df_tool.empty else st.warning("No data.")
-    with t_trend: render_trends_tab(df_tool, tool_name_display, config, filter_context) if not df_tool.empty else st.warning("No data.")
-    with t_fc: render_forecast_tab(df_part, config, df_logistics, working_days_per_week, working_hours_per_day, filter_context) if not df_part.empty else st.warning("No data.")
+    with t_risk: render_risk_tower(df_tool, config)
+    with t_opt: render_dashboard(df_tool, config, "Optimal") if not df_tool.empty else st.warning("No data.")
+    with t_tgt: render_dashboard(df_tool, config, "Target") if not df_tool.empty else st.warning("No data.")
+    with t_trend: render_trends_tab(df_tool, config) if not df_tool.empty else st.warning("No data.")
+    with t_fc: render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, working_hours_per_day) if not df_tool.empty else st.warning("No data.")
 
 if __name__ == "__main__":
     main()
