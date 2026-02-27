@@ -226,35 +226,31 @@ def display_filter_context(ctx, tool_name=None):
     st.info("🗂️ **Current Filter Scope:** " + " | ".join(active_filters))
 
 def create_capsule(value, color_logic="neutral", suffix="", inverse=False):
-    """Generates an HTML string for a styled pill/capsule seamlessly adapting to the theme."""
-    bg_color = "var(--secondary-background-color)" 
-    text_color = "var(--text-color)"
-    border_style = "border: 1px solid var(--border-color);"
+    """Generates an HTML string for a styled pill/capsule."""
+    bg_color = "#262730" 
+    text_color = "#ffffff"
     
     if color_logic == "grey":
-        pass 
+        bg_color = "#41424C" 
+        text_color = "#ffffff"
     elif color_logic == "good_bad":
-        border_style = ""
         if value >= 90: bg_color = cr_CG_utils.PASTEL_COLORS['green']; text_color = "#0E1117"
         elif value >= 75: bg_color = cr_CG_utils.PASTEL_COLORS['orange']; text_color = "#0E1117"
         else: bg_color = cr_CG_utils.PASTEL_COLORS['red']; text_color = "#0E1117"
     elif color_logic == "bad_good":
-        border_style = ""
         if value <= 10: bg_color = cr_CG_utils.PASTEL_COLORS['green']; text_color = "#0E1117"
         elif value <= 20: bg_color = cr_CG_utils.PASTEL_COLORS['orange']; text_color = "#0E1117"
         else: bg_color = cr_CG_utils.PASTEL_COLORS['red']; text_color = "#0E1117"
     elif color_logic == "net":
-        border_style = ""
         if value >= 0: bg_color = cr_CG_utils.PASTEL_COLORS['green']; text_color = "#0E1117"
         else: bg_color = cr_CG_utils.PASTEL_COLORS['red']; text_color = "#0E1117"
     elif color_logic == "status":
-        border_style = ""
         if "Track" in value or "Fulfilled" in value: bg_color = cr_CG_utils.PASTEL_COLORS['green']; text_color = "#0E1117"
         elif "Late" in value: bg_color = cr_CG_utils.PASTEL_COLORS['red']; text_color = "#0E1117"
         else: bg_color = cr_CG_utils.PASTEL_COLORS['orange']; text_color = "#0E1117"
         return f'<span style="background-color:{bg_color}; color:{text_color}; padding:2px 8px; border-radius:10px; font-weight:bold; font-size:0.8em;">{value}</span>'
 
-    return f'<span style="background-color:{bg_color}; color:{text_color}; {border_style} padding:2px 8px; border-radius:10px; font-weight:bold; font-size:0.8em;">{value:,.1f}{suffix}</span>'
+    return f'<span style="background-color:{bg_color}; color:{text_color}; padding:2px 8px; border-radius:10px; font-weight:bold; font-size:0.8em;">{value:,.1f}{suffix}</span>'
 
 # ==============================================================================
 # --- 1. RENDER FUNCTIONS ---
@@ -485,7 +481,7 @@ def render_po_fulfilment_tab(df_tool, config, df_logistics, working_days, workin
             agg_daily = cr_CG_utils.get_aggregated_data(po_shots_iter, 'Daily', config)
             finish_date = "N/A"
             status = "Unknown"
-            est_color = "var(--text-color)"
+            est_color = "#ffffff"
             
             start_date_val = pd.to_datetime(row['start_date']).strftime('%Y-%m-%d') if pd.notna(row['start_date']) else "N/A"
             due_date_val = pd.to_datetime(row['due_date']).strftime('%Y-%m-%d') if pd.notna(row['due_date']) else "N/A"
@@ -536,24 +532,24 @@ def render_po_fulfilment_tab(df_tool, config, df_logistics, working_days, workin
                     summ = po_summaries[i + j]
                     
                     card_html = f"""
-                    <div style="background-color: var(--secondary-background-color); color: var(--text-color); padding: 20px; border-radius: 12px; border: 1px solid var(--border-color); margin-bottom: 20px; display: flex; flex-direction: column; justify-content: space-between; height: 100%; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                    <div style="background-color: #262730; padding: 20px; border-radius: 12px; border: 1px solid #41424C; margin-bottom: 20px; display: flex; flex-direction: column; justify-content: space-between; height: 100%; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
                         <div>
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                                 <h3 style="margin: 0; color: #3498DB; font-size: 1.3rem;">{summ['po']}</h3>
                                 {create_capsule(summ['status'], color_logic='status')}
                             </div>
                             <div style="font-size: 32px; font-weight: bold; margin-bottom: 2px;">{summ['pct']:.1f}%</div>
-                            <div style="opacity: 0.7; font-size: 14px; margin-bottom: 20px;">{summ['act']:,.0f} / {summ['tgt']:,.0f} Parts</div>
+                            <div style="color: #a0a0a0; font-size: 14px; margin-bottom: 20px;">{summ['act']:,.0f} / {summ['tgt']:,.0f} Parts</div>
                         </div>
-                        <div style="font-size: 13px; border-top: 1px solid var(--border-color); padding-top: 12px;">
+                        <div style="font-size: 13px; border-top: 1px solid #41424C; padding-top: 12px;">
                             <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
-                                <span style="opacity: 0.7;">Start Date:</span> <span>{summ['start']}</span>
+                                <span style="color: #a0a0a0;">Start Date:</span> <span>{summ['start']}</span>
                             </div>
                             <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
-                                <span style="opacity: 0.7;">Due Date:</span> <span>{summ['due']}</span>
+                                <span style="color: #a0a0a0;">Due Date:</span> <span>{summ['due']}</span>
                             </div>
-                            <div style="display: flex; justify-content: space-between; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border-color);">
-                                <span style="opacity: 0.7;">Est. Completion:</span> <span style="font-weight: bold; font-size: 14px; color: {summ['est_color']};">{summ['est']}</span>
+                            <div style="display: flex; justify-content: space-between; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #333;">
+                                <span style="color: #a0a0a0;">Est. Completion:</span> <span style="font-weight: bold; font-size: 14px; color: {summ['est_color']};">{summ['est']}</span>
                             </div>
                         </div>
                     </div>
@@ -850,7 +846,7 @@ def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, wo
                 status_text = "LATE - AT RISK" if finish_avg > due_date else "ON TRACK"
                 
                 analysis_html = f"""
-                <div style="background-color: var(--secondary-background-color); color: var(--text-color); padding: 15px; border-radius: 5px; border: 1px solid var(--border-color); margin-bottom: 20px;">
+                <div style="background-color: #262730; padding: 15px; border-radius: 5px; border: 1px solid #41424C; margin-bottom: 20px;">
                     <h4 style="margin-top:0;">Forecast Analysis</h4>
                     <ul>
                         <li><strong>Status:</strong> <span style="color:{status_color}; font-weight:bold;">{status_text}</span> to meet demand by {due_date.strftime('%Y-%m-%d')}.</li>
@@ -956,7 +952,7 @@ def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, wo
                 status_text = "LATE - AT RISK" if is_late else "ON TRACK"
                 
                 st.markdown(f"""
-                <div style="background-color: var(--secondary-background-color); color: var(--text-color); padding: 15px; border-radius: 5px; border: 1px solid var(--border-color);">
+                <div style="background-color: #262730; padding: 15px; border-radius: 5px; border: 1px solid #41424C;">
                     <h4 style="margin-top:0;">Forecast Analysis</h4>
                     <ul>
                         <li><strong>Status:</strong> <span style="color:{status_color}; font-weight:bold;">{status_text}</span> to meet demand by {tgt_date}.</li>
@@ -1104,7 +1100,7 @@ def render_dashboard(df_tool, config, dashboard_mode="Optimal", key_prefix="glob
                 key=f"eff_gauge_{key_suffix}"
              )
              st.markdown(f"""
-             <div style='text-align: center; font-size: 14px; opacity: 0.7; margin-bottom: 10px;'>
+             <div style='text-align: center; font-size: 14px; color: #a0a0a0; margin-bottom: 10px;'>
                 {res['normal_shots']:,} / {res['total_shots']:,} (Normal Shots / Total Shots)
              </div>
              """, unsafe_allow_html=True)
@@ -1127,7 +1123,7 @@ def render_dashboard(df_tool, config, dashboard_mode="Optimal", key_prefix="glob
              prod_str = cr_CG_utils.format_seconds_to_dhm(res['production_time_sec'])
              total_str = cr_CG_utils.format_seconds_to_dhm(res['total_runtime_sec'])
              st.markdown(f"""
-             <div style='text-align: center; font-size: 14px; opacity: 0.7; margin-bottom: 10px;'>
+             <div style='text-align: center; font-size: 14px; color: #a0a0a0; margin-bottom: 10px;'>
                 {prod_str} / {total_str} (Production Time / Total Run Duration)
              </div>
              """, unsafe_allow_html=True)
@@ -1650,7 +1646,7 @@ def main():
             cols = st.columns(len(selected_tools))
             for i, t_id in enumerate(selected_tools):
                 with cols[i]:
-                    st.markdown(f"<h3 style='text-align: center; color: #3498DB;'>Tool: {t_id}</h3>", unsafe_allow_html=True)
+                    st.markdown(f"<h3 style='text-align: center; color: deepskyblue;'>Tool: {t_id}</h3>", unsafe_allow_html=True)
                     t_df = df_tool[df_tool['tool_id'].astype(str) == t_id]
                     if not t_df.empty: render_dashboard(t_df, config, "Optimal", key_prefix=t_id)
                     else: st.warning(f"No data for {t_id}")
@@ -1663,7 +1659,7 @@ def main():
             cols = st.columns(len(selected_tools))
             for i, t_id in enumerate(selected_tools):
                 with cols[i]:
-                    st.markdown(f"<h3 style='text-align: center; color: #3498DB;'>Tool: {t_id}</h3>", unsafe_allow_html=True)
+                    st.markdown(f"<h3 style='text-align: center; color: deepskyblue;'>Tool: {t_id}</h3>", unsafe_allow_html=True)
                     t_df = df_tool[df_tool['tool_id'].astype(str) == t_id]
                     if not t_df.empty: render_dashboard(t_df, config, "Target", key_prefix=t_id)
                     else: st.warning(f"No data for {t_id}")
@@ -1676,7 +1672,7 @@ def main():
             cols = st.columns(len(selected_tools))
             for i, t_id in enumerate(selected_tools):
                 with cols[i]:
-                    st.markdown(f"<h3 style='text-align: center; color: #3498DB;'>Tool: {t_id}</h3>", unsafe_allow_html=True)
+                    st.markdown(f"<h3 style='text-align: center; color: deepskyblue;'>Tool: {t_id}</h3>", unsafe_allow_html=True)
                     t_df = df_tool[df_tool['tool_id'].astype(str) == t_id]
                     if not t_df.empty: render_trends_tab(t_df, config, key_prefix=t_id)
                     else: st.warning(f"No data for {t_id}")
@@ -1689,7 +1685,7 @@ def main():
             cols = st.columns(len(selected_tools))
             for i, t_id in enumerate(selected_tools):
                 with cols[i]:
-                    st.markdown(f"<h3 style='text-align: center; color: #3498DB;'>Tool: {t_id}</h3>", unsafe_allow_html=True)
+                    st.markdown(f"<h3 style='text-align: center; color: deepskyblue;'>Tool: {t_id}</h3>", unsafe_allow_html=True)
                     t_df = df_tool[df_tool['tool_id'].astype(str) == t_id]
                     if not t_df.empty: render_forecast_tab(t_df, config, df_logistics, working_days_per_week, working_hours_per_day, key_prefix=t_id)
                     else: st.warning(f"No data for {t_id}")
@@ -1702,7 +1698,7 @@ def main():
             cols = st.columns(len(selected_tools))
             for i, t_id in enumerate(selected_tools):
                 with cols[i]:
-                    st.markdown(f"<h3 style='text-align: center; color: #3498DB;'>Tool: {t_id}</h3>", unsafe_allow_html=True)
+                    st.markdown(f"<h3 style='text-align: center; color: deepskyblue;'>Tool: {t_id}</h3>", unsafe_allow_html=True)
                     t_df = df_tool[df_tool['tool_id'].astype(str) == t_id]
                     if not t_df.empty: render_po_fulfilment_tab(t_df, config, df_logistics, working_days_per_week, working_hours_per_day, key_prefix=t_id)
                     else: st.warning(f"No data for {t_id}")
