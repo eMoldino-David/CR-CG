@@ -449,7 +449,7 @@ def render_trends_tab(df_tool, config, key_prefix="global"):
         st.warning(f"Metric {metric_to_plot} not found in data.")
 
 def render_po_fulfilment_tab(df_tool, config, df_logistics, working_days, working_hours, key_prefix="global"):
-    """New Tab: Analyzes Fulfilment % of PO targets dynamically across multiple dimensions."""
+    """New Tab: Analyzes Fulfilment % of PO targets dynamically across multiple dimensions with Dashcards."""
     if key_prefix == "global":
         st.header("PO Fulfilment Analysis")
         
@@ -457,6 +457,113 @@ def render_po_fulfilment_tab(df_tool, config, df_logistics, working_days, workin
         st.warning("Logistics Plan and PO Number mapping in the production data are both required for this tab.")
         return
         
+    active_pos = df_tool['po_number'].dropna().unique()
+    
+    # ====================================================
+    # --- NEW: TOP-LEVEL PO STATUS DASHCARDS ---
+    # ====================================================
+    st.subheader("PO Status Overview")
+    po_summaries = []
+    
+    with st.spinner("Calculating Fulfilment statuses via core engine..."):
+        for po in active_pos:
+            if po == 'Unknown': continue
+            po_rec_df = df_logistics[df_logistics['po_number'] == po]
+            if po_rec_df.empty: continue
+            
+            row = po_rec_df.iloc[0]
+            po_shots_iter = df_tool[df_tool['po_number'] == po]
+            
+            calc = cr_CG_utils.CapacityRiskCalculator(po_shots_iter, **config)
+            act_qty = calc.results['actual_output_parts'] if calc.results else 0
+            tgt_qty = row.get('total_qty', 0)
+            
+            agg_daily = cr_CG_utils.get_aggregated_data(po_shots_iter, 'Daily', config)
+            finish_date = "N/A"
+            status = "Unknown"
+            est_color = "#ffffff"
+            
+            start_date_val = pd.to_datetime(row['start_date']).strftime('%Y-%m-%d') if pd.notna(row['start_date']) else "N/A"
+            due_date_val = pd.to_datetime(row['due_date']).strftime('%Y-%m-%d') if pd.notna(row['due_date']) else "N/A"
+            
+            if not agg_daily.empty:
+                start_dt = pd.to_datetime(row['start_date']).date() if pd.notna(row['start_date']) else po_shots_iter['shot_time'].min().date()
+                due_dt = pd.to_datetime(row['due_date']).date() if pd.notna(row['due_date']) else None
+                
+                last_act_date = agg_daily['Period'].max()
+                if isinstance(last_act_date, str):
+                    try: last_act_date = pd.to_datetime(last_act_date).date()
+                    except: last_act_date = start_dt
+                
+                days_elapsed = (last_act_date - start_dt).days + 1
+                if days_elapsed < 1: days_elapsed = 1
+                avg_rate = act_qty / days_elapsed
+                
+                if act_qty >= tgt_qty:
+                    status = "Fulfilled"
+                    finish_date = "Done"
+                    est_color = cr_CG_utils.PASTEL_COLORS['green']
+                elif avg_rate > 0:
+                    rem = tgt_qty - act_qty
+                    days_rem = int(rem / avg_rate)
+                    est_finish = last_act_date + timedelta(days=days_rem)
+                    finish_date = est_finish.strftime('%Y-%m-%d')
+                    if due_dt and est_finish > due_dt:
+                        status = "Late (At Risk)"
+                        est_color = cr_CG_utils.PASTEL_COLORS['red']
+                    else:
+                        status = "On Track"
+                        est_color = cr_CG_utils.PASTEL_COLORS['green']
+                else:
+                    status = "Stalled"
+                    
+            po_summaries.append({
+                'po': po, 'act': act_qty, 'tgt': tgt_qty, 'status': status, 
+                'est': finish_date, 'est_color': est_color, 'start': start_date_val, 'due': due_date_val, 
+                'pct': (act_qty/tgt_qty*100) if tgt_qty > 0 else 0
+            })
+            
+    if po_summaries:
+        # Render cards in rows of 3
+        for i in range(0, len(po_summaries), 3):
+            cols = st.columns(3)
+            for j in range(3):
+                if i + j < len(po_summaries):
+                    summ = po_summaries[i + j]
+                    
+                    card_html = f"""
+                    <div style="background-color: #262730; padding: 20px; border-radius: 12px; border: 1px solid #41424C; margin-bottom: 20px; display: flex; flex-direction: column; justify-content: space-between; height: 100%; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                        <div>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                <h3 style="margin: 0; color: #3498DB; font-size: 1.3rem;">{summ['po']}</h3>
+                                {create_capsule(summ['status'], color_logic='status')}
+                            </div>
+                            <div style="font-size: 32px; font-weight: bold; margin-bottom: 2px;">{summ['pct']:.1f}%</div>
+                            <div style="color: #a0a0a0; font-size: 14px; margin-bottom: 20px;">{summ['act']:,.0f} / {summ['tgt']:,.0f} Parts</div>
+                        </div>
+                        <div style="font-size: 13px; border-top: 1px solid #41424C; padding-top: 12px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+                                <span style="color: #a0a0a0;">Start Date:</span> <span>{summ['start']}</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+                                <span style="color: #a0a0a0;">Due Date:</span> <span>{summ['due']}</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #333;">
+                                <span style="color: #a0a0a0;">Est. Completion:</span> <span style="font-weight: bold; font-size: 14px; color: {summ['est_color']};">{summ['est']}</span>
+                            </div>
+                        </div>
+                    </div>
+                    """
+                    cols[j].markdown(card_html, unsafe_allow_html=True)
+    else:
+        st.info("No PO mapping available to generate Dashcards.")
+
+    st.markdown("---")
+
+    # ====================================================
+    # --- EXISTING: PO FULFILMENT ANALYSIS SECTION ---
+    # ====================================================
+    st.subheader("Detailed Fulfilment Breakdown")
     c1, c2 = st.columns(2)
     freq = c1.selectbox("Time Frequency", ["Overall", "Monthly", "Weekly", "Daily"], key=f"po_ful_freq_{key_prefix}")
     dim = c2.selectbox("Breakdown By", ["Purchase Order", "Project", "Component", "Part", "Supplier", "Plant", "Tooling"], key=f"po_ful_dim_{key_prefix}")
@@ -467,10 +574,9 @@ def render_po_fulfilment_tab(df_tool, config, df_logistics, working_days, workin
     }
     group_col = dim_map[dim]
     
-    active_pos = df_tool['po_number'].dropna().unique()
     all_po_data = []
     
-    with st.spinner("Calculating Fulfilment timelines via core engine..."):
+    with st.spinner("Generating breakdown timelines..."):
         for po in active_pos:
             if po == 'Unknown': continue
             po_shots = df_tool[df_tool['po_number'] == po]
