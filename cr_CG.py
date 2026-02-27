@@ -656,10 +656,19 @@ def render_po_fulfilment_tab(df_tool, config, df_logistics, working_days, workin
                 else:
                     status = "Stalled"
                     
+            proj_val = ', '.join(sorted(set(str(x) for x in po_shots_iter['project_id'].dropna() if str(x).lower() not in ['unknown', 'nan', 'none']))) if 'project_id' in po_shots_iter.columns else 'Unknown'
+            part_val = ', '.join(sorted(set(str(x) for x in po_shots_iter['part_id'].dropna() if str(x).lower() not in ['unknown', 'nan', 'none']))) if 'part_id' in po_shots_iter.columns else 'Unknown'
+            tools_val = ', '.join(sorted(set(str(x) for x in po_shots_iter['tool_id'].dropna() if str(x).lower() not in ['unknown', 'nan', 'none']))) if 'tool_id' in po_shots_iter.columns else 'Unknown'
+            
+            if not proj_val: proj_val = 'Unknown'
+            if not part_val: part_val = 'Unknown'
+            if not tools_val: tools_val = 'Unknown'
+
             po_summaries.append({
                 'po': po, 'act': act_qty, 'tgt': tgt_qty, 'status': status, 
                 'est': finish_date, 'est_color': est_color, 'start': start_date_val, 'due': due_date_val, 
-                'pct': (act_qty/tgt_qty*100) if tgt_qty > 0 else 0
+                'pct': (act_qty/tgt_qty*100) if tgt_qty > 0 else 0,
+                'proj': proj_val, 'part': part_val, 'tools': tools_val
             })
             
     if po_summaries:
@@ -676,7 +685,16 @@ def render_po_fulfilment_tab(df_tool, config, df_logistics, working_days, workin
                             
                             # KPI Row
                             st.markdown(f"<div style='font-size: 32px; font-weight: bold; margin-bottom: 2px;'>{summ['pct']:.1f}%</div>", unsafe_allow_html=True)
-                            st.markdown(f"<div style='opacity: 0.7; font-size: 14px; margin-bottom: 20px;'>{summ['act']:,.0f} / {summ['tgt']:,.0f} Parts</div>", unsafe_allow_html=True)
+                            st.markdown(f"<div style='opacity: 0.7; font-size: 14px; margin-bottom: 12px;'>{summ['act']:,.0f} / {summ['tgt']:,.0f} Parts</div>", unsafe_allow_html=True)
+                            
+                            # Contextual Info
+                            st.markdown(f"""
+                            <div style="font-size: 13px; margin-bottom: 15px;">
+                                <div style="margin-bottom: 4px;"><strong>Project:</strong> <span style="opacity: 0.8;">{summ['proj']}</span></div>
+                                <div style="margin-bottom: 4px;"><strong>Part:</strong> <span style="opacity: 0.8;">{summ['part']}</span></div>
+                                <div style="margin-bottom: 4px;"><strong>Tooling:</strong> <span style="opacity: 0.8;">{summ['tools']}</span></div>
+                            </div>
+                            """, unsafe_allow_html=True)
                             
                             # Sub-details Row
                             st.markdown(f"""
@@ -729,7 +747,7 @@ def render_po_fulfilment_tab(df_tool, config, df_logistics, working_days, workin
             # Map contextual hierarchy for pivoting
             for d_name, d_col in dim_map.items():
                 if d_col in po_shots.columns:
-                    val = ', '.join(sorted([str(x) for x in po_shots[d_col].dropna().unique() if str(x).lower() != 'unknown']))
+                    val = ', '.join(sorted([str(x) for x in po_shots[d_col].dropna().unique() if str(x).lower() not in ['unknown', 'nan', 'none']]))
                     if not val: val = "Unknown"
                     daily_df[d_col] = val
                 else:
@@ -744,22 +762,46 @@ def render_po_fulfilment_tab(df_tool, config, df_logistics, working_days, workin
     df_timeline = pd.concat(all_po_data, ignore_index=True)
     
     if freq == "Overall":
-        agg_df = df_timeline.groupby(group_col).agg({
-            'Estimated Demand': 'sum',
-            'Actual Output': 'sum'
-        }).reset_index()
+        agg_funcs = {'Estimated Demand': 'sum', 'Actual Output': 'sum'}
+        for d_col in dim_map.values():
+            if d_col != group_col:
+                agg_funcs[d_col] = 'first'
+                
+        agg_df = df_timeline.groupby(group_col).agg(agg_funcs).reset_index()
         
         # In overall mode, the demand is just the sum of Total Qty for the POs in that slice.
         agg_df['Fulfilment %'] = (agg_df['Actual Output'] / agg_df['Estimated Demand'] * 100).fillna(0)
-        agg_df.rename(columns={group_col: dim, 'Estimated Demand': 'Target Quantity'}, inplace=True)
+        
+        # Attach Status cleanly
+        if dim == "Purchase Order":
+            status_map = {s['po']: s['status'] for s in po_summaries}
+            agg_df['Status'] = agg_df[group_col].map(status_map)
+        else:
+            def get_group_status(row):
+                if row['Actual Output'] >= row['Estimated Demand']: return "Fulfilled"
+                if row['Actual Output'] > 0: return "In Progress"
+                return "Pending"
+            agg_df['Status'] = agg_df.apply(get_group_status, axis=1)
+
+        dim_map_rev = {v: k for k, v in dim_map.items()}
+        rename_dict = {c: dim_map_rev[c] for c in agg_df.columns if c in dim_map_rev}
+        rename_dict['Estimated Demand'] = 'Target Quantity'
+        agg_df.rename(columns=rename_dict, inplace=True)
         agg_df = agg_df.sort_values('Fulfilment %', ascending=False)
+        
+        ordered_cols = [dim] + [c for c in dim_map.keys() if c != dim and c in agg_df.columns] + ['Target Quantity', 'Actual Output', 'Fulfilment %', 'Status']
+        agg_df = agg_df[[c for c in ordered_cols if c in agg_df.columns]]
         
         fig = px.bar(agg_df, x=dim, y=['Actual Output', 'Target Quantity'], barmode='group', 
                      title=f"Overall PO Fulfilment by {dim}")
         st.plotly_chart(fig, use_container_width=True, key=f"ful_fig_overall_{key_prefix}")
         
-        st.dataframe(agg_df.style.format({'Target Quantity': '{:,.0f}', 'Actual Output': '{:,.0f}', 'Fulfilment %': '{:.1f}%'}), 
-                     use_container_width=True, hide_index=True)
+        st.dataframe(
+            agg_df.style.format({'Target Quantity': '{:,.0f}', 'Actual Output': '{:,.0f}', 'Fulfilment %': '{:.1f}%'})
+            .map(lambda x: f"background-color: {cr_CG_utils.PASTEL_COLORS['green']}; color: black" if "Track" in str(x) or "Fulfilled" in str(x) else 
+                           f"background-color: {cr_CG_utils.PASTEL_COLORS['red']}; color: black" if "Late" in str(x) else "", subset=['Status']), 
+            use_container_width=True, hide_index=True
+        )
                      
     else:
         df_timeline['Period_Obj'] = pd.to_datetime(df_timeline['Period'])
@@ -770,22 +812,46 @@ def render_po_fulfilment_tab(df_tool, config, df_logistics, working_days, workin
         else:
             df_timeline['Period_Agg'] = df_timeline['Period_Obj'].dt.date.astype(str)
             
-        agg_df = df_timeline.groupby(['Period_Agg', group_col]).agg({
-            'Estimated Demand': 'sum',
-            'Actual Output': 'sum'
-        }).reset_index()
+        agg_funcs = {'Estimated Demand': 'sum', 'Actual Output': 'sum'}
+        for d_col in dim_map.values():
+            if d_col != group_col:
+                agg_funcs[d_col] = 'first'
+                
+        agg_df = df_timeline.groupby(['Period_Agg', group_col]).agg(agg_funcs).reset_index()
         
         agg_df['Fulfilment %'] = (agg_df['Actual Output'] / agg_df['Estimated Demand'] * 100).fillna(0)
-        agg_df.rename(columns={'Period_Agg': 'Period', group_col: dim, 'Estimated Demand': 'Periodic Demand'}, inplace=True)
+        
+        dim_map_rev = {v: k for k, v in dim_map.items()}
+        rename_dict = {c: dim_map_rev[c] for c in agg_df.columns if c in dim_map_rev}
+        rename_dict['Period_Agg'] = 'Period'
+        rename_dict['Estimated Demand'] = 'Periodic Demand'
+        agg_df.rename(columns=rename_dict, inplace=True)
         agg_df = agg_df.sort_values('Period')
+        
+        if dim == "Purchase Order":
+            status_map = {s['po']: s['status'] for s in po_summaries}
+            agg_df['Status'] = agg_df[dim].map(status_map)
+        else:
+            def get_group_status(row):
+                if row['Actual Output'] >= row['Periodic Demand']: return "Fulfilled"
+                if row['Actual Output'] > 0: return "In Progress"
+                return "Pending"
+            agg_df['Status'] = agg_df.apply(get_group_status, axis=1)
+            
+        ordered_cols = ['Period', dim] + [c for c in dim_map.keys() if c != dim and c in agg_df.columns] + ['Periodic Demand', 'Actual Output', 'Fulfilment %', 'Status']
+        agg_df = agg_df[[c for c in ordered_cols if c in agg_df.columns]]
         
         fig = px.line(agg_df, x='Period', y='Fulfilment %', color=dim, markers=True, 
                       title=f"Periodic Fulfilment % by {dim} ({freq})")
         fig.add_hline(y=100, line_dash="dash", line_color="green", annotation_text="100% Fulfilment")
         st.plotly_chart(fig, use_container_width=True, key=f"ful_fig_time_{key_prefix}")
         
-        st.dataframe(agg_df.style.format({'Periodic Demand': '{:,.0f}', 'Actual Output': '{:,.0f}', 'Fulfilment %': '{:.1f}%'}), 
-                     use_container_width=True, hide_index=True)
+        st.dataframe(
+            agg_df.style.format({'Periodic Demand': '{:,.0f}', 'Actual Output': '{:,.0f}', 'Fulfilment %': '{:.1f}%'})
+            .map(lambda x: f"background-color: {cr_CG_utils.PASTEL_COLORS['green']}; color: black" if "Track" in str(x) or "Fulfilled" in str(x) else 
+                           f"background-color: {cr_CG_utils.PASTEL_COLORS['red']}; color: black" if "Late" in str(x) else "", subset=['Status']), 
+            use_container_width=True, hide_index=True
+        )
 
 def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, working_hours_per_day, key_prefix="global"):
     """Renders the PO Forecast & Burn-up Tab using dynamically filtered metrics."""
@@ -914,11 +980,12 @@ def render_forecast_tab(df_tool, config, df_logistics, working_days_per_week, wo
             
         df_summary_disp = pd.DataFrame(summary_data)
         
-        # Apply capsule styling to the status column
-        st.write(
+        # Apply capsule styling to the status column natively
+        st.dataframe(
             df_summary_disp.style.format({'Target Qty': '{:,.0f}', 'Produced Qty': '{:,.0f}'})
             .map(lambda x: f"background-color: {cr_CG_utils.PASTEL_COLORS['green']}; color: black" if "Track" in str(x) or "Fulfilled" in str(x) else 
-                           f"background-color: {cr_CG_utils.PASTEL_COLORS['red']}; color: black" if "Late" in str(x) else "", subset=['Status'])
+                           f"background-color: {cr_CG_utils.PASTEL_COLORS['red']}; color: black" if "Late" in str(x) else "", subset=['Status']),
+            use_container_width=True, hide_index=True
         )
 
         st.markdown("---")
