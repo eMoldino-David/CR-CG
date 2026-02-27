@@ -1281,4 +1281,17 @@ def plot_shot_analysis(df_shots, zoom_y=None):
     fig.add_hline(y=avg_ref, line_dash="dash", line_color="green", annotation_text=f"Avg Approved CT: {avg_ref:.2f}s")
     
     if zoom_y is None and not df_shots.empty:
-        cts = df_shots['
+        cts = df_shots['actual_ct']
+        if len(cts) > 0:
+            fig.update_yaxes(range=[0, min(cts.max() * 1.1, 1000)])
+
+    fig.update_layout(
+        title="Cycle Time Analysis",
+        yaxis_title="Cycle Time (s)",
+        xaxis_title="Time",
+        barmode='overlay',
+        hovermode="x unified",
+        height=500,
+        showlegend=True
+    )
+    return fig
