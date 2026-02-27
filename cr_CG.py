@@ -11,6 +11,83 @@ import importlib
 importlib.reload(cr_CG_utils)
 
 # ==============================================================================
+# --- EXACT ALIGNMENT MONKEYPATCH ---
+# ==============================================================================
+# By intercepting get_aggregated_data here, we guarantee that the Forecast, 
+# Trends, and Risk Tower tabs use the exact same 2-pass slicing logic that the 
+# Capacity (Optimal) tab uses. This fixes the aggregation logic discrepancy.
+def aligned_get_aggregated_data(df, freq_mode, config):
+    base_calc = cr_CG_utils.CapacityRiskCalculator(df, **config)
+    df_processed = base_calc.results.get('processed_df', pd.DataFrame())
+    if df_processed.empty: return pd.DataFrame()
+    
+    if freq_mode == 'Daily':
+        df_processed['Period_Lbl'] = df_processed['shot_time'].dt.date.astype(str)
+    elif freq_mode == 'Weekly':
+        df_processed['Period_Lbl'] = df_processed['shot_time'].dt.to_period('W').astype(str)
+    elif freq_mode == 'Monthly':
+        df_processed['Period_Lbl'] = df_processed['shot_time'].dt.to_period('M').astype(str)
+    elif freq_mode == 'Hourly':
+        df_processed['Period_Lbl'] = df_processed['shot_time'].dt.floor('H').astype(str)
+    elif freq_mode == 'by Run':
+        df_processed['Period_Lbl'] = df_processed['run_id'].astype(str)
+    else:
+        return pd.DataFrame()
+
+    agg_rows = []
+    for period, df_period in df_processed.groupby('Period_Lbl'):
+        run_breakdown_df = cr_CG_utils.calculate_run_summaries(df_period, config)
+        if run_breakdown_df.empty: continue
+        
+        total_runtime = run_breakdown_df['total_runtime_sec'].sum()
+        prod_time = run_breakdown_df['production_time_sec'].sum()
+        downtime = run_breakdown_df['downtime_sec'].sum()
+        
+        opt_output = run_breakdown_df['optimal_output_parts'].sum()
+        tgt_output = run_breakdown_df['target_output_parts'].sum() if 'target_output_parts' in run_breakdown_df.columns else (opt_output * (config['target_output_perc']/100.0))
+        act_output = run_breakdown_df['actual_output_parts'].sum()
+        
+        loss_dt = run_breakdown_df['capacity_loss_downtime_parts'].sum()
+        loss_slow = run_breakdown_df['capacity_loss_slow_parts'].sum()
+        gain_fast = run_breakdown_df['capacity_gain_fast_parts'].sum()
+        total_loss = run_breakdown_df['total_capacity_loss_parts'].sum()
+        gap_tgt = max(0, tgt_output - act_output)
+        
+        total_shots = run_breakdown_df['total_shots'].sum()
+        normal_shots = run_breakdown_df['normal_shots'].sum()
+        
+        if freq_mode == 'by Run':
+            try: period = f"Run {int(period) + 1}"
+            except: pass
+
+        agg_rows.append({
+            'Period': period,
+            'Actual Output': act_output,
+            'Optimal Output': opt_output,
+            'Target Output': tgt_output,
+            'Downtime Loss': loss_dt,
+            'Slow Loss': loss_slow,
+            'Fast Gain': gain_fast,
+            'Net Cycle Loss': loss_slow - gain_fast,
+            'Total Loss': total_loss,
+            'Gap to Target': gap_tgt,
+            'Run Time': cr_CG_utils.format_seconds_to_dhm(total_runtime),
+            'Downtime': cr_CG_utils.format_seconds_to_dhm(downtime),
+            'Run Time Sec': total_runtime,
+            'Production Time Sec': prod_time,
+            'Downtime Sec': downtime,
+            'Total Shots': total_shots,
+            'Normal Shots': normal_shots,
+            'Downtime Shots': total_shots - normal_shots
+        })
+        
+    if not agg_rows: return pd.DataFrame()
+    return pd.DataFrame(agg_rows).sort_values('Period')
+
+# Override utility function
+cr_CG_utils.get_aggregated_data = aligned_get_aggregated_data
+
+# ==============================================================================
 # --- 🔒 SECURITY: Initial LOGIN ---
 # ==============================================================================
 # This stops the app from loading ANY data until the password is correct.
@@ -35,8 +112,6 @@ def check_password():
 if not check_password():
     st.stop()  
 
-
-
 # ==============================================================================
 # --- PAGE CONFIG ---
 # ==============================================================================
@@ -49,7 +124,7 @@ st.set_page_config(layout="wide", page_title="Capacity Risk Dashboard (v10.6)")
 def display_filter_context(ctx, tool_name=None):
     """Displays a clear banner indicating exactly what data is currently filtered and active."""
     if not ctx:
-        tool_str = f" | **Tool:** {tool_name}" if tool_name and tool_name != 'Multiple' else ""
+        tool_str = f" | **Tool:** {tool_name}" if tool_name and tool_name != 'Multiple Tools (Rolled-Up)' else ""
         st.info(f"🗂️ **Current Filter Scope:** All Data{tool_str}")
         return
         
